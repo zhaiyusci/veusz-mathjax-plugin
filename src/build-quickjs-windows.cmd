@@ -21,6 +21,11 @@ rem   * MSVC (vcvars64.bat)   - found automatically unless VCVARS is set
 rem   * cmake                 - found on PATH, or in the Qt / VS installs
 rem   * a quickjs-ng checkout -> QUICKJS_SRC
 rem
+rem The checkout may sit either inside this project or beside it, in that order:
+rem   %PROJECT%\quickjs-src\quickjs.h
+rem   %PROJECT%\..\quickjs-src\quickjs.h
+rem The build directory is a sibling of whichever one is found.
+rem
 rem Usage:
 rem   src\build-quickjs-windows.cmd
 rem   set QUICKJS_SRC=C:\src\quickjs-ng
@@ -31,8 +36,22 @@ set "SRCDIR=%HERE:~0,-1%"
 set "PROJECT=%SRCDIR%\.."
 set "OUTDIR=%PROJECT%\data"
 
-if "%QUICKJS_SRC%"=="" set "QUICKJS_SRC=%PROJECT%\..\quickjs-src"
-if "%QUICKJS_BUILD%"=="" set "QUICKJS_BUILD=%PROJECT%\..\quickjs-build-shared"
+rem ---- locate the checkout (project-local first, then beside the project) ----
+set "QJS_LOCAL=%PROJECT%\quickjs-src"
+if not "%QUICKJS_SRC%"=="" goto :have_src
+if exist "%QJS_LOCAL%\quickjs.h" set "QUICKJS_SRC=%QJS_LOCAL%"
+if not "%QUICKJS_SRC%"=="" goto :have_src
+if exist "%PROJECT%\..\quickjs-src\quickjs.h" set "QUICKJS_SRC=%PROJECT%\..\quickjs-src"
+:have_src
+
+rem ---- the build directory follows the source it was found next to ----
+if not "%QUICKJS_BUILD%"=="" goto :have_build
+if /i "%QUICKJS_SRC%"=="%QJS_LOCAL%" (
+    set "QUICKJS_BUILD=%PROJECT%\quickjs-build-shared"
+) else (
+    set "QUICKJS_BUILD=%PROJECT%\..\quickjs-build-shared"
+)
+:have_build
 
 rem ---- find vcvars64 -----------------------------------------------------
 if "%VCVARS%"=="" (

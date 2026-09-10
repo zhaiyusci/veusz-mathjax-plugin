@@ -165,9 +165,11 @@ python tools/build_all.py                 # add --font tex for a 3 MB bundle
                                           #         to rebuild only part of it
 ```
 
-`tools/build_all.py` expects the checkout in `../quickjs-src` and the shared
-build in `../quickjs-build-shared`; override with the `QUICKJS_SRC` /
-`QUICKJS_LIB` environment variables. Behind a proxy, npm needs `HTTPS_PROXY`.
+The scripts look for the quickjs-ng checkout in `quickjs-src/` **inside** this
+project first, then in `../quickjs-src` **beside** it, and put the build in the
+matching `quickjs-build-shared/` — so the `git clone` above works whether you
+run it inside the project directory or next to it. `QUICKJS_SRC` / `QUICKJS_LIB`
+override the search. Behind a proxy, npm needs `HTTPS_PROXY`.
 The build scripts find `vcvars64.bat` and cmake themselves (`VCVARS` and `CMAKE`
 override the search).
 

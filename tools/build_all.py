@@ -23,6 +23,7 @@ Environment:
 """
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -65,6 +66,31 @@ def find_cmake():
         if Path(cand).exists():
             return cand
     return None
+
+
+def quickjs_dirs():
+    """Where the QuickJS checkout is, and where its build should go.
+
+    Two layouts are accepted, in this order:
+
+        <project>/quickjs-src/          inside the project (.gitignore has it)
+        <project>/../quickjs-src/       beside the project
+
+    So cloning this repository and cloning quickjs-ng into it both work. The
+    build directory is always a sibling of whichever source tree was found.
+    QUICKJS_SRC / QUICKJS_LIB override the whole thing.
+    """
+    env_src = os.environ.get('QUICKJS_SRC')
+    if env_src:
+        src = Path(env_src)
+        return src, Path(os.environ.get('QUICKJS_BUILD')
+                         or PROJECT.parent / 'quickjs-build-shared')
+    for parent in (PROJECT, PROJECT.parent):
+        src = parent / 'quickjs-src'
+        if (src / 'quickjs.h').exists():
+            return src, parent / 'quickjs-build-shared'
+    return PROJECT / 'quickjs-src', PROJECT / 'quickjs-build-shared'
+
 
 
 def build_bundle(args):
@@ -113,8 +139,7 @@ def build_bridge():
         print('[build] cmake not found')
         return 1
     build_dir = PROJECT / 'build' / 'bridge'
-    quickjs_src = PROJECT.parent / 'quickjs-src'
-    quickjs_build = PROJECT.parent / 'quickjs-build-shared'
+    quickjs_src, quickjs_build = quickjs_dirs()
     configure = [cmake, '-S', str(PROJECT / 'src'), '-B', str(build_dir),
                  '-DQUICKJS_SRC=%s' % quickjs_src,
                  '-DQUICKJS_LIB=%s' % (quickjs_build / 'qjs.lib'),
@@ -164,6 +189,12 @@ def main():
     ap.add_argument('--esbuild', default=None,
                     help='path to the esbuild binary (default: from --packages)')
     args = ap.parse_args()
+
+    qjs_src, qjs_build = quickjs_dirs()
+    print('[build] QuickJS source: %s%s'
+          % (qjs_src, '' if (qjs_src / 'quickjs.h').exists()
+             else '   (MISSING -- clone quickjs-ng, or set QUICKJS_SRC)'))
+    print('[build] QuickJS build : %s' % qjs_build)
 
     if not args.skip_bundle:
         if build_bundle(args) != 0:

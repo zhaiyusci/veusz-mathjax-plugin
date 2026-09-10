@@ -19,9 +19,11 @@ rem   * MSVC (vcvars64.bat) - found automatically unless VCVARS is set
 rem   * the QuickJS source tree for the headers      -> QUICKJS_SRC
 rem   * the QuickJS IMPORT library (qjs.lib)         -> QUICKJS_LIB
 rem
-rem Defaults look for a checkout next to this project:
-rem   ..\quickjs-src\quickjs.h                  (headers)
-rem   ..\quickjs-build-shared\qjs.lib           (import lib, shared build)
+rem The QuickJS checkout may sit either inside this project or beside it, in
+rem that order; the import library is taken from the matching build directory:
+rem   %PROJECT%\quickjs-src + %PROJECT%\quickjs-build-shared
+rem   %PROJECT%\..\quickjs-src + %PROJECT%\..\quickjs-build-shared
+rem (run src\build-quickjs-windows.cmd first: it creates both)
 rem
 rem Usage:
 rem   src\build-quickjs-windows.cmd      (once)
@@ -36,8 +38,21 @@ set "PROJECT=%SRCDIR%\.."
 set "OUTDIR=%PROJECT%\data"
 set "SRC=%SRCDIR%\mathjax_bridge.cpp"
 
-if "%QUICKJS_SRC%"=="" set "QUICKJS_SRC=%PROJECT%\..\quickjs-src"
-if "%QUICKJS_LIB%"=="" set "QUICKJS_LIB=%PROJECT%\..\quickjs-build-shared\qjs.lib"
+rem ---- locate the checkout (project-local first, then beside the project) ----
+set "QJS_LOCAL=%PROJECT%\quickjs-src"
+if not "%QUICKJS_SRC%"=="" goto :have_src
+if exist "%QJS_LOCAL%\quickjs.h" set "QUICKJS_SRC=%QJS_LOCAL%"
+if not "%QUICKJS_SRC%"=="" goto :have_src
+if exist "%PROJECT%\..\quickjs-src\quickjs.h" set "QUICKJS_SRC=%PROJECT%\..\quickjs-src"
+:have_src
+
+if not "%QUICKJS_LIB%"=="" goto :have_lib
+if /i "%QUICKJS_SRC%"=="%QJS_LOCAL%" (
+    set "QUICKJS_LIB=%PROJECT%\quickjs-build-shared\qjs.lib"
+) else (
+    set "QUICKJS_LIB=%PROJECT%\..\quickjs-build-shared\qjs.lib"
+)
+:have_lib
 
 if "%VCVARS%"=="" (
     for %%V in (
