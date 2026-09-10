@@ -215,21 +215,28 @@ was rendered.
 ## How it works
 
 Veusz's plugin system executes a Python file at startup, so this plugin has
-access to Veusz's internals. It uses exactly four hooks:
+access to Veusz's internals. It uses exactly five hooks:
 
 1. **Settings** — wraps `veusz.setting.collections.Text.__init__` to add the
    `useTeX` boolean to every text-bearing widget. The properties panel is
    generated from the settings tree, so the checkbox appears by itself and is
    saved in `.vsz` files like any other setting.
-2. **Widget wiring** — wraps `draw` of every registered widget class to publish
-   "which text settings are being painted right now" in a thread-local. No
-   widget internals are touched. The search also looks into nested groups
-   (`settings.ticklabels`, `settings.label`, …), because an axis keeps its text
-   settings there.
-3. **Renderer** — wraps `veusz.utils.Renderer`, the single place every widget
-   paints text through: when `useTeX` is set it returns its own renderer,
-   otherwise the original one.
-4. **Drawing** — the renderer asks the bridge for the SVG of the formula, draws
+2. **Which text is this?** — wraps `makeQFont` of the text settings class.
+   Every widget builds the font of a text element from that element's own
+   settings group just before drawing it (`s.get('TickLabels').makeQFont(
+   painter)` for the tick numbers, `s.get('Label').makeQFont(painter)` for an
+   axis label, `s.get('Text')` for a label or a key), so recording which group
+   made the font tells the renderer which group the text belongs to. Without
+   this, an axis's *Use TeX* on the label would drag its tick numbers along.
+3. **Widget wiring** — wraps `draw` of every registered widget class to publish
+   the widget's own settings as a fallback, for text painted without a
+   `makeQFont` of its own. No widget internals are touched. The search also
+   looks into nested groups (`settings.ticklabels`, `settings.label`, …),
+   because an axis keeps its text settings there.
+4. **Renderer** — wraps `veusz.utils.Renderer`, the single place every widget
+   paints text through: for text whose settings group asked for TeX it returns
+   its own renderer, otherwise the original one.
+5. **Drawing** — the renderer asks the bridge for the SVG of the formula, draws
    it with Qt's SVG renderer, rotates it if the label is rotated, and positions
    it using the baseline MathJax reports (`vertical-align`). Colour comes from
    the current pen, and results are cached per (text, size, colour).
@@ -266,8 +273,6 @@ copy of it, so `data/` holds three artefacts with one licence each (see
 * Rendering is synchronous: the first paint of a formula costs a few
   milliseconds (then it is cached). Very large documents with hundreds of
   distinct TeX labels will feel that on the first draw.
-* Text settings are handled per widget, not per text element: if a widget
-  contains several text elements, ticking the box applies to all of them.
 * The MathJax bundle is ~12 MB (3 MB with `--font tex`, ~7 MB with `--trim`),
   the QuickJS engine is ~1 MB and the bridge ~41 KB. Nothing of that is in
   upstream Veusz.

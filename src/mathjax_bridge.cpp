@@ -256,9 +256,12 @@ void read_ex_height_env() {
     }
 }
 
-// 把 ex 字符串解析为像素值
-// text_size 是字体像素大小,1ex = text_size * g_ex_height
-float ex_to_px(const char* ex_str, float text_size) {
+// 把 SVG 里的长度按字体大小换算:
+//   "ex" 或无单位  -> val * size * g_ex_height   (size 的单位就是结果的单位)
+//   其它单位       -> 原样返回,视为已经是目标单位
+// 当前调用方只传 ex 字符串(width/height/vertical-align)并要 pt,所以传 pt。
+// (函数名以前叫 ex_to_px,但它并不总返回像素,容易误用,故改名。)
+float ex_to_size(const char* ex_str, float size) {
     if (!ex_str || !*ex_str) return 0.0f;
     // 手动解析: 浮点数 + 可选单位
     float val = 0.0f;
@@ -284,16 +287,16 @@ float ex_to_px(const char* ex_str, float text_size) {
     if (neg) val = -val;
     // 单位
     if (strncmp(p, "ex", 2) == 0) {
-        return val * text_size * g_ex_height;
+        return val * size * g_ex_height;
     }
     if (strncmp(p, "pt", 2) == 0) {
-        return val * 96.0f / 72.0f;
+        return val;
     }
     if (strncmp(p, "px", 2) == 0) {
         return val;
     }
     // 无单位,按 ex 处理
-    return val * text_size * g_ex_height;
+    return val * size * g_ex_height;
 }
 
 // 把 SVG 根元素的 width/height/style 从 ex 单位转成 pt 单位。
@@ -692,11 +695,16 @@ static int render_state(
         }
     }
 
-    // 输出 pt 值
-    float px_factor = (text_size > 0) ? (text_size * 96.0f / 72.0f) : 20.0f;
-    if (out_width_pt) *out_width_pt = ex_to_px(width_ex, px_factor);
-    if (out_height_pt) *out_height_pt = ex_to_px(height_ex, px_factor);
-    if (out_baseline_pt) *out_baseline_pt = ex_to_px(valign_ex, px_factor);
+    // 输出 pt 值: 与 rewrite_svg_units() 用同一个换算式
+    //     1ex = text_size_pt * g_ex_height   (pt)
+    // ex_to_size() 的结果单位跟着 size 参数的单位走,所以这里传 pt 进去。
+    // 注意: 这里以前把 size 先按 96dpi 转成了像素再乘,而调用方(插件)按 pt
+    // 使用返回值、再乘 dpi/72 换算成像素,于是公式整体被放大 4/3 (约 33%),
+    // 这就是"MathJax 出来的字比正常字体大"的原因。
+    float size_pt = (text_size > 0) ? text_size : 20.0f;
+    if (out_width_pt) *out_width_pt = ex_to_size(width_ex, size_pt);
+    if (out_height_pt) *out_height_pt = ex_to_size(height_ex, size_pt);
+    if (out_baseline_pt) *out_baseline_pt = ex_to_size(valign_ex, size_pt);
 
     if (out_svg) *out_svg = svg_copy;
     if (out_len) *out_len = svg_len;

@@ -18,7 +18,10 @@ How it works, and why each piece is needed:
      asked for TeX.  No widget internals are touched.
   3. ``veusz.utils.Renderer`` (the single choke point every widget paints text
      through) is wrapped: with ``useTeX`` set it returns a renderer that draws
-     the MathJax SVG, otherwise the original renderer is used.
+     the MathJax SVG, otherwise the original renderer is used.  Which text gets
+     TeX is decided per text element, from the settings group whose
+     ``makeQFont`` produced its font -- an axis keeps tick numbers and its
+     label in separate groups, and one must not drag the other along.
   4. The MathJax SVG is painted with Qt's own SVG renderer, and the baseline
      (MathJax's ``vertical-align``) is honoured so TeX labels line up with
      plain text.  Anything missing (no DLL, no bundle, a MathJax error) falls
@@ -297,9 +300,45 @@ def build_renderer_class(textrender, qt, host):
 # --------------------------------------------------------------------------
 
 _current_text_settings = threading.local()
+_last_font_owner = threading.local()
 
 
-def _current_use_tex():
+def _font_owner(font):
+    """The settings group this font was made from, if it was made here.
+
+    Every veusz widget builds the font of a text element from that element's
+    own settings group, immediately before drawing it -- ``s.get('TickLabels')
+    .makeQFont(painter)`` for the tick numbers, ``s.get('Label').makeQFont(
+    painter)`` for the axis label, ``s.get('Text').makeQFont(painter)`` for a
+    label or a key.  A veusz that supports TeX passes that same group's useTeX
+    to the renderer at the call site; stock veusz passes nothing, so the group
+    is recorded when the font is made and matched against the font the renderer
+    receives.  That is what keeps an axis label's Use TeX out of its tick
+    numbers.
+    """
+    record = getattr(_last_font_owner, 'value', None)
+    if record is None:
+        return None
+    owner, owner_font = record
+    try:
+        if owner_font != font:
+            return None
+    except Exception:
+        return None
+    return owner
+
+
+def _current_use_tex(font=None):
+    """Whether the text about to be painted asked for TeX.
+
+    The owning settings group wins, because it is the one the current text
+    belongs to.  The widget-level answer is only a fallback, for text painted
+    without a preceding makeQFont.
+    """
+    if font is not None:
+        owner = _font_owner(font)
+        if owner is not None and hasattr(owner, 'useTeX'):
+            return bool(owner.useTeX)
     settings = getattr(_current_text_settings, 'value', None)
     return bool(settings is not None and getattr(settings, 'useTeX', False))
 
@@ -311,12 +350,12 @@ def _is_settings(obj):
 def _find_tex_settings(settings, depth=0):
     """Settings object of this widget that asked for TeX, or None.
 
-    A widget's text settings are not always at ``settings.Text``: axes keep
-    theirs under ``settings.ticklabels`` / ``settings.label``, keys under
-    ``settings.Text``, and so on.  The renderer factory cannot know which of
-    them belongs to the text being painted (that information only exists at the
-    widget's own call site), so the plugin looks for any nested Text group with
-    useTeX set and uses that for the widget's text.
+    Fallback only.  The precise answer comes from the font the renderer is
+    given (see ``_font_owner``); this is for text painted without a preceding
+    ``makeQFont``, where all that is known is the widget.  It walks the nested
+    settings groups because a widget's text settings are not always at
+    ``settings.Text``: axes keep theirs under ``settings.ticklabels`` /
+    ``settings.label``, keys under ``settings.Text``, and so on.
     """
     if depth > 4 or not _is_settings(settings):
         return None
@@ -373,6 +412,20 @@ def install(verbose=True):
 
     collections.Text.__init__ = _text_init
 
+    # ---- 1b. remember which settings group a font was made from -----------
+    # This is the per-text half of the answer: a widget may hold several text
+    # elements (an axis has tick numbers and a label) and each has its own
+    # Use TeX, so "is this text TeX?" has to be decided per element, from the
+    # group that made its font, not once per widget.
+    _orig_makeQFont = collections.Text.makeQFont
+
+    def _makeQFont(self, painthelper):
+        font = _orig_makeQFont(self, painthelper)
+        _last_font_owner.value = (self, font)
+        return font
+
+    collections.Text.makeQFont = _makeQFont
+
     # ---- 2. remember which widget is being painted ------------------------
     wrapped = []
 
@@ -394,11 +447,14 @@ def install(verbose=True):
                 else:
                     tex_settings = _find_tex_settings(settings)
             previous = getattr(_current_text_settings, 'value', None)
+            previous_owner = getattr(_last_font_owner, 'value', None)
             _current_text_settings.value = tex_settings
+            _last_font_owner.value = None      # fonts seen are this draw's
             try:
                 return orig(self, *args, **kwargs)
             finally:
                 _current_text_settings.value = previous
+                _last_font_owner.value = previous_owner
 
         draw._mathjax_plugin = True
         cls.draw = draw
@@ -414,7 +470,7 @@ def install(verbose=True):
     def _renderer(painter, font, x, y, text,
                   alignhorz=-1, alignvert=-1, angle=0, usefullheight=False,
                   doc=None, **kwargs):
-        if _current_use_tex() and text and not text.lstrip().startswith('<'):
+        if _current_use_tex(font) and text and not text.lstrip().startswith('<'):
             try:
                 return renderer_class(
                     painter, font, x, y, text,
