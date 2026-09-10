@@ -23,6 +23,13 @@ reason and the messages should say which:
    exported and must all contain ink, so a working plugin cannot break normal
    text.
 
+4. **The size is right on the paper.**  A 20pt formula has to be 20pt of paper,
+   whatever dpi is used: the ink height of \\mathrm{H} is measured in points
+   (ink pixels * 72 / dpi) and compared with what the font's own metrics say
+   (New Computer Modern's cap height, 0.683 em = 13.7 pt).  This is the check
+   that catches a formula rendered at the wrong size -- a 33% error shipped
+   once because nothing measured it.
+
 Note for anyone tempted to simplify this: comparing the TeX label against the
 same label with `useTeX` off does **not** work as a check.  Measured on a broken
 install -- bridge present, engine unloadable -- those two images come out with
@@ -190,6 +197,34 @@ def plain_doc(ifc):
     ifc.Set('lbl/label', 'plain text label')
 
 
+def glyph_doc(text, size_pt, usetex):
+    """One glyph on a page, so its ink bounding box is the glyph itself."""
+    def build(ifc):
+        page = ifc.Add('page')
+        ifc.To(page)
+        ifc.Add('label', name='lbl')
+        ifc.Set('lbl/label', text)
+        ifc.Set('lbl/Text/size', '%gpt' % size_pt)
+        ifc.Set('lbl/Text/useTeX', usetex)
+
+    return build
+
+
+def glyph_height_pt(text, size_pt, usetex, dpi):
+    """Ink height of a single glyph, in points of paper (so: dpi-independent)."""
+    doc = veusz.document.Document()
+    ifc = veusz.document.CommandInterface(doc)
+    glyph_doc(text, size_pt, usetex)(ifc)
+    path = tmp / ('glyph-%s-%d.png' % ('tex' if usetex else 'plain', dpi))
+    ifc.Export(str(path), dpi=dpi)
+    img = qt.QImage(str(path)).convertToFormat(qt.QImage.Format.Format_ARGB32)
+    ys = [y for y in range(img.height())
+          for x in range(img.width()) if (img.pixel(x, y) >> 24) & 0xFF]
+    if not ys:
+        return 0.0
+    return (max(ys) - min(ys) + 1) * 72.0 / dpi
+
+
 if render('tex-label', label_doc) <= 0:
     ok = False
     print('FAIL: the TeX label drew nothing')
@@ -199,6 +234,36 @@ if render('tex-axis', axis_doc) <= 0:
 if render('plain', plain_doc) <= 0:
     ok = False
     print('FAIL: an ordinary label drew nothing (the plugin broke normal text)')
+
+# ------------------------------------------- 4. is the size right on the paper?
+# Both paths are measured in points of paper, which is what has to match: the
+# ink height of a 20pt glyph, in points, does not depend on the dpi used.
+GLYPH_PT = 20.0
+CAP_HEIGHT_EM = 0.683            # New Computer Modern, the bundled math font
+EXPECTED_PT = CAP_HEIGHT_EM * GLYPH_PT          # 13.66 pt
+TOLERANCE = 0.06                 # ink bounding-box rounding at this dpi
+SIZE_DPI = 150
+
+tex_pt = glyph_height_pt(r'\mathrm{H}', GLYPH_PT, True, SIZE_DPI)
+plain_pt = glyph_height_pt('H', GLYPH_PT, False, SIZE_DPI)
+print()
+print('size: at %gpt, \\mathrm{H} is %.2f pt of paper (%.3f em of the requested '
+      'size); a plain H is %.2f pt of paper'
+      % (GLYPH_PT, tex_pt, tex_pt / GLYPH_PT, plain_pt))
+if tex_pt <= 0:
+    ok = False
+    print('FAIL: could not measure the TeX glyph')
+elif abs(tex_pt - EXPECTED_PT) > TOLERANCE * EXPECTED_PT:
+    ok = False
+    print('FAIL: expected about %.2f pt for a %gpt formula, measured %.2f pt '
+          '(%.1f%% off).\n'
+          '      The formula is not being drawn at the size that was asked for.'
+          % (EXPECTED_PT, GLYPH_PT, tex_pt,
+             100.0 * (tex_pt - EXPECTED_PT) / EXPECTED_PT))
+if plain_pt > 0 and tex_pt > 0 and not (0.75 < tex_pt / plain_pt < 1.25):
+    ok = False
+    print('FAIL: TeX text is %.2fx the height of ordinary text at the same '
+          'point size' % (tex_pt / plain_pt))
 
 print()
 print('PASS' if ok else 'FAIL')
