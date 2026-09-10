@@ -1,0 +1,17 @@
+# Line endings.
+#
+# The batch files are CRLF-only as far as cmd.exe is concerned: with LF-only
+# endings cmd mis-parses blocks and can drop the last line.  Normalise them to
+# LF in the repository (so diffs stay readable) but always check them out as
+# CRLF, whatever core.autocrlf says on the machine doing the clone.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Everything else: normalise on commit, native endings on checkout.
+* text=auto
+
+# Keep the release binaries and the generated bundle out of diffs.
+*.dll binary
+*.so binary
+*.dylib binary
+*.js binary

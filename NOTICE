@@ -1,0 +1,43 @@
+veusz-mathjax-plugin
+Copyright 2026 Yu Zhai
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+--------------------------------------------------------------------------------
+This distribution includes the following third-party components.
+--------------------------------------------------------------------------------
+
+MathJax 4.1.3 (@mathjax/src) and the official MathJax font packages
+(@mathjax/mathjax-newcm-font, plus the mhchem / bboldx / dsfont / bbm font
+extensions)
+    Copyright (c) 2010-2026 The MathJax Consortium
+    Licensed under the Apache License, Version 2.0 (see LICENSE)
+    Bundled into data/mathjax_bundle.js.  The file is generated: MathJax is
+    bundled and minified with esbuild, and the font glyph ranges are inlined
+    because the embedded engine cannot fetch anything at render time.
+
+mhchemParser 4.2.1 (the \ce and \pu support inside MathJax)
+    Copyright (c) 2015-2023 Martin Hensel
+    Licensed under the Apache License, Version 2.0 (see LICENSE)
+    https://github.com/mhchem/mhchemParser
+
+QuickJS (quickjs-ng 0.16.2)
+    Copyright (c) 2017-2026 Fabrice Bellard
+    Copyright (c) 2017-2024 Charlie Gordon
+    Copyright (c) 2023-2026 Ben Noordhuis
+    Copyright (c) 2023-2026 Saúl Ibarra Corretgé
+    Licensed under the MIT License (see licenses/quickjs-ng-LICENSE.txt)
+    Built unmodified into data/qjs.dll, with -DBUILD_SHARED_LIBS=ON.
+
+esbuild
+    Copyright (c) 2020 Evan Wallace
+    Licensed under the MIT License
+    Used at build time only; not part of this distribution.
+
+--------------------------------------------------------------------------------
+Veusz is NOT included in this distribution.
+--------------------------------------------------------------------------------
+
+Veusz is licensed under the GNU GPL v2 or later.  This plugin is a separate
+program: it redistributes no Veusz source code, and loads Veusz at run time
+through its plugin interface.  No Veusz code is present in any file here.

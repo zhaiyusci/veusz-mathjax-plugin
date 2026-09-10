@@ -1,0 +1,20 @@
+# build outputs / local state
+build/
+dist/
+data/*.dll
+data/*.so
+data/*.dylib
+data/*.old.dll
+data/*.new.dll
+data/mathjax_bundle.js
+
+__pycache__/
+*.pyc
+veusz_mathjax.log
+veusz_microtex.log
+veusz_jsengines.log
+
+# the QuickJS checkout / build, if it lives next to the project
+/quickjs-src/
+/quickjs-build/
+/quickjs-build-shared/
