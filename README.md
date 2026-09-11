@@ -379,9 +379,17 @@ copy of it, so `data/` holds three artefacts with one licence each (see
   every font's glyph tables have to be in the engine at once. Nothing of that is
   in upstream Veusz, and none of it is paid at all until a label asks for
   MathJax.
-* `\text{中文}` (CJK inside a formula) needs a font that has those glyphs; the
-  bundled math font does not, and Veusz's fallback for SVG text is limited.
-  CJK in plain (non-TeX) labels is unaffected — that is Veusz's own text path.
+* **Glyphs the math font does not have.** CJK inside a formula (`\text{中文}`),
+  a rare symbol, an arrow, an emoji: MathJax hands those to the SVG as a
+  `<text>` element, and Qt draws it with a system font — so real glyphs do
+  appear, not boxes. But in exports that text comes out about twice the size it
+  should be and overflows the space reserved for the formula. Measured: a 20pt
+  `\text{中文测试}` is given a 19pt-tall box and draws 35pt of ink. Everything
+  else in the formula is unaffected (it is drawn as paths), and a plain
+  (non-TeX) label with the same text is fine — that is Veusz's own text path.
+  Not fixed yet; it needs the plugin to lay that text out itself rather than
+  leave it to Qt's SVG `<text>` handling (the same thing the Qt-based engine in
+  the Veusz fork does).
 * Prebuilt binaries are **Windows x64 only** (see *Platforms*).
 
 ## Related
