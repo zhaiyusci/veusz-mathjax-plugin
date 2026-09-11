@@ -49,32 +49,44 @@ Data files, all in a ``data/`` directory next to this file:
 """
 
 import ctypes
+import html
 import json
 import os
+import re
 import sys
 import threading
+import time
 from pathlib import Path
 
 # --------------------------------------------------------------------------
 # data discovery
 # --------------------------------------------------------------------------
 
-def _plugin_dir():
-    """Directory this plugin file lives in.
+def _plugin_path():
+    """Path of the plugin file that is running.
 
     veusz loads plugin files with exec(f.read(), {}), so there is no __file__;
     the caller's frame (Document.loadPlugins) holds the path in ``plugin``.
     """
     try:
-        frame = sys._getframe(2)
+        frame = sys._getframe(1)
         while frame is not None:
             candidate = frame.f_locals.get('plugin')
             if isinstance(candidate, str) and candidate.endswith('.py'):
-                return Path(candidate).resolve().parent
+                return Path(candidate).resolve()
             frame = frame.f_back
     except Exception:
         pass
-    return None
+    try:
+        return Path(__file__).resolve()
+    except Exception:
+        return None
+
+
+def _plugin_dir():
+    """Directory this plugin file lives in."""
+    path = _plugin_path()
+    return path.parent if path is not None else None
 
 
 def _first_existing(candidates):
@@ -298,6 +310,251 @@ class JsHost:
 def build_renderer_class(textrender, qt, host):
     """Create the MathJax renderer class (needs the veusz modules to subclass)."""
 
+    # -- SVG <text> --------------------------------------------------------
+    #
+    # MathJax draws every character its bundled math font has as a <path>, and
+    # emits a <text> element for the ones it does not have (CJK, a rare symbol,
+    # an emoji, whenever the chooser's font lacks them).  Text is the one thing
+    # in the SVG that is not a path, and it does not survive Veusz's painting:
+    # every widget is recorded onto a device and replayed, and Qt sizes SVG text
+    # against the paint device's resolution rather than in the SVG's own units
+    # (so it comes out dpi/72 times too large: measured x1.33 on a 96dpi screen,
+    # x4.17 in a 300dpi export, against x1.00 for the paths), and it is replayed
+    # as a hairline outline rather than the filled glyph that was drawn.
+    #
+    # So convert it here, once, into the <path> outlines Qt would have used.
+    # Measured through Veusz's own recording device, inside the installed Veusz:
+    #
+    #     <text> straight          216 x  68 px FILLED
+    #     <text> via recording     478 x 243 px FILLED  (2.2x too big)
+    #     <path> straight          216 x  68 px FILLED
+    #     <path> via recording     216 x  68 px FILLED  <- what we want
+    #
+    # and the conversion itself is faithful: the same glyphs as <text> and as
+    # <path> differ by 1 pixel in 5393 (IoU 1.000).
+    #
+    # The <text> element's own transform has to be kept, or the glyphs come out
+    # flipped: MathJax wraps the formula in scale(1,-1) and each text element in
+    # scale(1,-1) again, so text-local coordinates (y down, baseline at the
+    # origin, which is also what QPainterPath.addText produces) land upright
+    # only through the second flip.
+    _TEXT_ELEM_RE = re.compile(rb'<text\b([^>]*)>(.*?)</text>', re.S)
+    _ATTR_RE = re.compile(rb'([A-Za-z-]+)\s*=\s*"([^"]*)"')
+    _TEXT_SIZE_RE = re.compile(rb'font-size="([0-9.]+)px"')
+    # families that name a *kind* of font rather than one: MathJax writes these
+    # for characters its math font lacks, and we substitute the text element's
+    # own font for them
+    _GENERIC_FAMILIES = frozenset((
+        '', 'serif', 'sans-serif', 'monospace', 'cursive', 'fantasy',
+        'system-ui', 'ui-serif', 'ui-sans-serif', 'ui-monospace',
+        'ui-rounded', 'math', 'emoji', 'fangsong'))
+    # glyphs are built at this pixel size and scaled down, so the outlines do
+    # not depend on the font size asked for
+    _OUTLINE_PX = 1000.0
+    _converted = {}
+
+    def _svg_path_data(path):
+        """A QPainterPath as SVG path data (glyph contours are closed)."""
+        parts = []
+        move = qt.QPainterPath.ElementType.MoveToElement
+        line = qt.QPainterPath.ElementType.LineToElement
+        curve = qt.QPainterPath.ElementType.CurveToElement
+        count = path.elementCount()
+        i = 0
+        while i < count:
+            element = path.elementAt(i)
+            if element.type == move:
+                if parts:
+                    parts.append('Z')
+                parts.append('M%.2f %.2f' % (element.x, element.y))
+            elif element.type == line:
+                parts.append('L%.2f %.2f' % (element.x, element.y))
+            elif element.type == curve:
+                one = path.elementAt(i + 1)
+                two = path.elementAt(i + 2)
+                parts.append('C%.2f %.2f %.2f %.2f %.2f %.2f'
+                             % (element.x, element.y, one.x, one.y,
+                                two.x, two.y))
+                i += 2
+            i += 1
+        parts.append('Z')
+        return ' '.join(parts)
+
+    def _text_to_path_data(text, attrs, label_family, em_units=None):
+        """Outline for one <text> element, in the element's own coordinates.
+
+        ``em_units`` is what one em is worth in this SVG's user units.  MathJax
+        sizes the text of a character it has no glyph for as ``2 * ex`` of the
+        chosen math font, so the same CJK comes out 17% larger under Fira
+        (ex/em 0.527) than under Termes (0.441) -- and 12% smaller than a plain
+        label of the same size.  Drawing it at one em instead makes those
+        characters match the text around them, in every math font.
+        """
+        family = (attrs.get('font-family') or '').split(',')[0]
+        family = family.strip().strip('\'"')
+        # MathJax writes a *generic* family (its default is "serif") for the
+        # characters its own math font does not have -- it has no idea what the
+        # figure is set in.  Draw those in the font this text element is set in
+        # instead, so a formula's CJK matches the text around it (and so the
+        # Font setting in the formatting panel means something for it).  An
+        # explicit family from the engine still wins.
+        if family.lower() in _GENERIC_FAMILIES and label_family:
+            family = label_family
+        size = attrs.get('font-size') or ''
+        size = size.strip().rstrip('px')
+        try:
+            size = float(size)
+        except ValueError:
+            return None
+        # fall back to the size the engine asked for if we cannot work out what
+        # an em is here
+        if em_units is None or em_units <= 0:
+            em_units = size
+        if size <= 0 or em_units <= 0 or not text:
+            return None
+
+        font = qt.QFont(family) if family else qt.QFont()
+        font.setPixelSize(int(_OUTLINE_PX))
+        weight = (attrs.get('font-weight') or '').strip().lower()
+        if weight in ('bold', 'bolder') or weight.isdigit() and int(weight) >= 600:
+            font.setBold(True)
+        if (attrs.get('font-style') or '').strip().lower() in ('italic', 'oblique'):
+            font.setItalic(True)
+        # outlines, not hinted bitmaps: this is geometry, and it has to match
+        # what Qt's SVG renderer would have drawn
+        strategy = qt.QFont.StyleStrategy
+        font.setStyleStrategy(strategy.PreferOutline | strategy.ForceOutline)
+        if hasattr(font, 'setHintingPreference'):
+            font.setHintingPreference(
+                qt.QFont.HintingPreference.PreferNoHinting)
+
+        # QPainterPath.addText does not fall back to another font for a
+        # character this one lacks -- it would draw a box.  Qt's own SVG text
+        # route would find a system font, so leave those to it (the size
+        # correction below still applies to them).
+        try:
+            metrics = qt.QFontMetrics(font)
+            if any(not metrics.inFontUcs4(ord(char)) for char in text):
+                return None
+        except Exception:
+            pass
+
+        path = qt.QPainterPath()
+        path.addText(qt.QPointF(0.0, 0.0), font, text)
+        scale = em_units / _OUTLINE_PX
+        path = qt.QTransform.fromScale(scale, scale).map(path)
+        try:
+            x = float(attrs.get('x', '0') or 0)
+            y = float(attrs.get('y', '0') or 0)
+        except ValueError:
+            x = y = 0.0
+        if x or y:
+            path = qt.QTransform.fromTranslate(x, y).map(path)
+        if path.isEmpty():
+            return None
+        return _svg_path_data(path).encode('utf-8')
+
+    def svg_text_as_paths(svg, label_family='', em_units=None):
+        """Replace every <text> in the SVG with equivalent <path> outlines.
+
+        ``label_family`` is the font this text element is set in, used for the
+        characters the math font lacks; ``em_units`` is what one em is worth in
+        the SVG's user units, so those characters can be drawn at one em.  An
+        element that cannot be converted is left as text (and then the font-size
+        correction below still keeps its size right).
+        """
+        key = (svg, label_family, em_units)
+        cached = _converted.get(key)
+        if cached is not None:
+            return cached
+        leftover = False
+
+        def one_element(match):
+            nonlocal leftover
+            attrs = dict((k.decode('ascii', 'replace'), v.decode('utf-8'))
+                         for k, v in _ATTR_RE.findall(match.group(1)))
+            text = html.unescape(match.group(2).decode('utf-8'))
+            try:
+                data = _text_to_path_data(text, attrs, label_family, em_units)
+            except Exception:
+                data = None
+            if data is None:
+                leftover = True
+                return match.group(0)
+            transform = attrs.get('transform')
+            if transform:
+                return (b'<path transform="'
+                        + transform.encode('utf-8') + b'" d="' + data + b'"/>')
+            return b'<path d="' + data + b'"/>'
+
+        if b'<text' not in svg:
+            _converted[key] = (svg, False)
+            return svg, False
+        converted = _TEXT_ELEM_RE.sub(one_element, svg)
+        if len(_converted) > 128:
+            _converted.clear()
+        _converted[svg] = (converted, leftover)
+        return converted, leftover
+
+    def em_in_user_units(svg, w_pt, size_pt):
+        """How many SVG user units one em is worth in this formula.
+
+        MathJax lays its maths out with 1 em = the size that was asked for (a
+        20pt formula's em is 20pt of paper: the box it gives two unknown
+        characters is 40pt), and the plugin paints the SVG into a rect of the
+        reported box, so the box and the viewBox give the scale.  Returns None
+        if the SVG does not say, and then the engine's own font size is used.
+        """
+        match = re.search(rb'viewBox="([^"]*)"', svg)
+        if match is None or w_pt <= 0 or size_pt <= 0:
+            return None
+        try:
+            viewbox_width = float(match.group(1).split()[2])
+        except (IndexError, ValueError):
+            return None
+        if viewbox_width <= 0:
+            return None
+        return size_pt * (viewbox_width / w_pt)
+
+    def qt_text_factor(painter):
+        """What Qt multiplies SVG <text> font sizes by, or 1.0 if it will not.
+
+        Only Veusz's recording device reports the page dpi in that metric. A
+        QImage reports 72 (so there is nothing to cancel), and the QPicture
+        fallback used when Veusz's native recording device is missing is not
+        scaled this way at all, so both are left alone.
+        """
+        try:
+            device = painter.device()
+            if type(device).__name__ != 'RecordPaintDevice':
+                return 1.0
+            dpi = float(device.metric(
+                qt.QPaintDevice.PaintDeviceMetric.PdmDpiY))
+        except Exception:
+            return 1.0
+        return dpi / 72.0 if dpi > 0 else 1.0
+
+    def cancel_qt_text_factor(svg, painter):
+        """Undo Qt's device-dpi scaling of any <text> left in the SVG.
+
+        Only needed for characters whose outlines could not be built above.
+        """
+        factor = qt_text_factor(painter)
+        if abs(factor - 1.0) < 1e-6 or b'<text' not in svg:
+            return svg
+        inverse = 1.0 / factor
+
+        def one_tag(match):
+            def one_size(size):
+                try:
+                    value = float(size.group(1))
+                except ValueError:
+                    return size.group(0)
+                return b'font-size="%gpx"' % (value * inverse)
+            return _TEXT_SIZE_RE.sub(one_size, match.group(0))
+
+        return re.compile(rb'<text\b[^>]*>').sub(one_tag, svg)
+
     class _MathJaxRenderer(textrender._Renderer):
         """Draws MathJax output by painting the SVG, baseline taken from it."""
 
@@ -358,6 +615,10 @@ def build_renderer_class(textrender, qt, host):
                                                    self.display, self.font_id)
             if not svg:
                 raise RuntimeError('empty SVG')
+            svg, left_as_text = svg_text_as_paths(
+                svg, self.font.family(), em_in_user_units(svg, w_pt, size))
+            if left_as_text:
+                svg = cancel_qt_text_factor(svg, self.painter)
             scale = self._pixperpt()
             self.svgbytes = svg
             self.color = color
@@ -739,11 +1000,34 @@ def install(verbose=True):
     import veusz.utils as utils
     utils.Renderer = _renderer
 
+    # Which copy of this file is actually running is worth recording: Veusz
+    # loads plugins once, at startup, so editing the file does nothing to a
+    # running Veusz, and that is easy to mistake for a fix that did not work.
+    try:
+        source = _plugin_path()
+        stamp = source.stat().st_mtime
+        loaded = '%s (%d bytes, modified %s)' % (
+            source, source.stat().st_size,
+            time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(stamp)))
+    except Exception:
+        loaded = '<unknown>'
+
     if verbose:
         print('veusz-mathjax: TeX rendering enabled (MathJax bundle)')
+        print('  plugin: %s' % loaded)
         print('  bridge: %s' % bridge)
         print('  bundle: %s' % bundle)
         print('  widgets wired: %d' % len(wrapped))
+    try:
+        base = _plugin_dir()
+        if base is not None:
+            (base / 'veusz_mathjax.log').write_text(
+                'veusz-mathjax: installed at %s\nplugin: %s\nbridge: %s\n'
+                'bundle: %s\nwidgets wired: %d\n'
+                % (time.strftime('%Y-%m-%d %H:%M:%S'), loaded, bridge, bundle,
+                   len(wrapped)), encoding='utf-8')
+    except Exception:
+        pass
     return {'bridge': str(bridge), 'bundle': str(bundle),
             'widgets': wrapped, 'host': host}
 

@@ -164,7 +164,11 @@ set — 40 of 40 for New Computer Modern, for instance.
 
 The formula is placed using the baseline MathJax reports, so TeX labels line up
 with each other and with plain text, and it is drawn as paths, so vector exports
-stay vector.
+stay vector. The one exception is a character the chosen math font does not
+have: that one is drawn as an outline at the size you asked for, in the font the
+text element is set in (the **Font** row), so you get a real character rather
+than a box, matching the text around it — the same in every resolution and under
+every math font. See *Limitations*.
 
 ## Package layout
 
@@ -203,6 +207,7 @@ be moved anywhere, as long as it is kept together.
 | The checkbox appears, but the label shows the TeX source | Rendering failed and the plugin fell back to plain text on purpose. The log names the reason; a missing `data/qjs.dll` or `data/mathjax_bundle.js` shows up at startup. |
 | The label shows `$x^2$`, dollars included | Drop the `$…$` — the whole label is the formula. |
 | Nothing happens at all, no log | The plugin was probably not added in Preferences → Plugins, or Veusz was not restarted. |
+| A fix does not seem to be in effect | Veusz loads plugins **once, at startup**: editing `veusz_mathjax.py` does nothing to a running Veusz. Restart it and check the first lines of `veusz_mathjax.log` — the plugin records which copy it loaded, with its size and modification time. |
 | "qjs.dll was not found" | `data/` was separated from `veusz_mathjax.py`, or a copy step skipped `qjs.dll`. Keep the folder together. |
 | Missing MSVC runtime DLLs | Install the Microsoft Visual C++ 2015–2022 x64 redistributable and try again. |
 
@@ -379,17 +384,37 @@ copy of it, so `data/` holds three artefacts with one licence each (see
   every font's glyph tables have to be in the engine at once. Nothing of that is
   in upstream Veusz, and none of it is paid at all until a label asks for
   MathJax.
-* **Glyphs the math font does not have.** CJK inside a formula (`\text{中文}`),
-  a rare symbol, an arrow, an emoji: MathJax hands those to the SVG as a
-  `<text>` element, and Qt draws it with a system font — so real glyphs do
-  appear, not boxes. But in exports that text comes out about twice the size it
-  should be and overflows the space reserved for the formula. Measured: a 20pt
-  `\text{中文测试}` is given a 19pt-tall box and draws 35pt of ink. Everything
-  else in the formula is unaffected (it is drawn as paths), and a plain
-  (non-TeX) label with the same text is fine — that is Veusz's own text path.
-  Not fixed yet; it needs the plugin to lay that text out itself rather than
-  leave it to Qt's SVG `<text>` handling (the same thing the Qt-based engine in
-  the Veusz fork does).
+* **Characters the math font lacks come from another font.** CJK inside a
+  formula (`\text{中文}`), a rare symbol, an emoji: MathJax hands those to the
+  SVG as a `<text>` element, and they are drawn at the font size you asked for,
+  in the font the text element is set in — the **Font** row in the formatting
+  panel — so a formula's CJK matches the text around it. (MathJax itself names
+  only a generic family for them, and sizes them as *2ex* of the chosen math
+  font, which made the same characters 17% larger under Fira than under Termes
+  and 12% smaller than a plain label at that size; the plugin substitutes the
+  element's own font and one em, so neither the font nor the math font moves
+  them. If that font has no such character either, Qt's system fallback supplies
+  it, as it always did.) Measured in Veusz 4.2.1/Qt 6.10.2, a 20pt `\text{珠子}`
+  is 39.8x19.4pt of paper under every one of the eleven math fonts, and 39.6x19.4pt
+  as a plain label. Their design and exact spacing are that font's, not the math
+  font's. The plugin paints them as
+  outlines rather than leaving them as text, because text does not survive
+  Veusz's painting: every widget is recorded onto a device and replayed, and Qt
+  sizes SVG text against that device's resolution instead of in the SVG's own
+  units, so the characters came out **dpi/72 times too large** — measured x1.3 on
+  a 96dpi screen, x2.1 in a 150dpi export and x4.2 at 300dpi — and spilled out of
+  the box the formula had reserved for them (a 20pt `\text{珠子}` was given a
+  40x19pt box and drew 150x72px of ink into an 83x40px one). Measured in Veusz
+  4.2.1 with Qt 6.10.2, the same glyph through the recording device came out
+  478x243px where the path form stayed at 216x68px. Everything else in the
+  formula was always exact: it is drawn as paths, and a path is only
+  coordinates. Converting the text to outlines here — Qt draws the identical
+  pixels (1 of 5393 differs, IoU 1.000) — makes the characters page-relative and
+  filled like the rest of the formula: `\text{珠}` now measures 17.2pt of paper
+  on a 96dpi screen, 16.8pt at 150dpi and 16.3pt at 300dpi, with nothing left as
+  text. `test/smoke_test.py` fails if a character the font does not have differs
+  by more than 8% between 96dpi and 300dpi, overflows its box, is still painted
+  as `<text>`, ignores the Font setting, or changes size with the math font.
 * Prebuilt binaries are **Windows x64 only** (see *Platforms*).
 
 ## Related

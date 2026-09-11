@@ -237,6 +237,29 @@ def glyph_height_pt(text, size_pt, settings, dpi, tag=''):
     return (max(ys) - min(ys) + 1) * 72.0 / dpi
 
 
+def ink_pt(text, size_pt, settings, dpi, tag=''):
+    """Ink bounding box of a formula, in points of paper (so: dpi-independent).
+
+    Returns (width, height) in points, or (0, 0) if nothing was drawn.
+    """
+    doc = veusz.document.Document()
+    ifc = veusz.document.CommandInterface(doc)
+    glyph_doc(text, size_pt, settings)(ifc)
+    path = tmp / ('ink-%s-%d.png' % (tag or 'x', dpi))
+    ifc.Export(str(path), dpi=dpi)
+    img = qt.QImage(str(path)).convertToFormat(qt.QImage.Format.Format_ARGB32)
+    xs, ys = [], []
+    for y in range(img.height()):
+        for x in range(img.width()):
+            if (img.pixel(x, y) >> 24) & 0xFF:
+                xs.append(x)
+                ys.append(y)
+    if not xs:
+        return 0.0, 0.0
+    return ((max(xs) - min(xs) + 1) * 72.0 / dpi,
+            (max(ys) - min(ys) + 1) * 72.0 / dpi)
+
+
 def ink_of(build, name, dpi):
     """Ink pixel count for a document, which is what tells fonts apart."""
     doc = veusz.document.Document()
@@ -369,6 +392,191 @@ else:
     print()
     print('font: only %d font in this package, skipping the default-font check'
           % len(_fonts))
+
+# ---------------------- 8. a glyph the font does not have stays the right size
+# CJK inside a formula is the one thing MathJax does not turn into paths: it
+# leaves a <text> element for Qt to draw with a system font, and Qt sizes that
+# text against the paint device's resolution instead of the SVG's own units.
+# Veusz paints through a recording device that reports the page dpi, so those
+# characters used to come out dpi/72 times too large -- 1.3x on a 96dpi screen
+# and 4.2x in a 300dpi export -- spilling out of the box the formula reserved
+# for them.  The plugin cancels Qt's factor, so this formula has to measure the
+# same on the paper at any dpi and has to stay inside its box.
+MISSING_TEX = r'\text{珠子}'
+_not_svg, box_w, box_h, _baseline = host.render(MISSING_TEX, GLYPH_PT)
+lo_w, lo_h = ink_pt(MISSING_TEX, GLYPH_PT, {'mathjax': True}, 96, 'cjk96')
+hi_w, hi_h = ink_pt(MISSING_TEX, GLYPH_PT, {'mathjax': True}, 300, 'cjk300')
+print()
+print('missing glyph: %s at %gpt is given a %.1f x %.1f pt box'
+      % (MISSING_TEX, GLYPH_PT, box_w, box_h))
+if lo_w <= 0 or lo_h <= 0:
+    print('   skipped: nothing was drawn -- this check needs a system font with '
+          'CJK glyphs, which this machine does not have')
+else:
+    print('   ink %.1f x %.1f pt at 96dpi, %.1f x %.1f pt at 300dpi'
+          % (lo_w, lo_h, hi_w, hi_h))
+    # 8% is generous for pixel rounding (a CJK glyph is only ~22px tall at
+    # 96dpi, so one pixel of hinting is already 4.5%); the fault this catches
+    # is a factor of 3.
+    if abs(hi_w - lo_w) > 0.08 * lo_w or abs(hi_h - lo_h) > 0.08 * lo_h:
+        ok = False
+        print('   FAIL: a character the font does not have is %.2fx bigger at '
+              '300dpi than at 96dpi.\n'
+              '         Qt scales SVG <text> by the paint device resolution and '
+              'the plugin is not cancelling it.' % (hi_w / lo_w))
+    elif lo_w > box_w * 1.06 or lo_h > box_h * 1.06:
+        ok = False
+        print('   FAIL: the characters overflow the box the formula was given '
+              '(ink %.1f x %.1f pt against a %.1f x %.1f pt box)'
+              % (lo_w, lo_h, box_w, box_h))
+    else:
+        print('   OK: the same size on the paper at both dpis, inside the box')
+
+# ------------------------------------ 9. and it must not be left as SVG text
+# A <text> element does not survive Veusz's record-and-replay painting: Qt sizes
+# it against the paint device's resolution and replays it as a hairline outline
+# instead of a filled glyph.  The plugin has to paint those characters as
+# <path> outlines instead -- that is what makes check 8 hold on the screen and
+# in an export alike.  Build the renderer by hand and look at what it will paint.
+import veusz.utils.textrender as _textrender                        # noqa: E402
+
+_renderer_cls = plugin_module.build_renderer_class(_textrender, qt, host)
+_buf = qt.QImage(600, 300, qt.QImage.Format.Format_ARGB32_Premultiplied)
+_buf.fill(0)
+_painter = qt.QPainter(_buf)
+_painter.pixperpt = 96.0 / 72.0
+_painter.dpi = 96.0
+_font = qt.QFont('Sans Serif')
+_font.setPointSizeF(GLYPH_PT)
+_renderer = _renderer_cls(
+    _painter, _font, 20.0, 150.0, MISSING_TEX,
+    alignhorz=-1, alignvert=-1, angle=0, usefullheight=False, doc=None,
+    display=False)
+_renderer.render()
+_painter.end()
+_painted = bytes(_renderer.svgbytes)
+print()
+print('painted SVG for %s: %d bytes, %d <text>, %d <path>'
+      % (MISSING_TEX, len(_painted), _painted.count(b'<text'),
+         _painted.count(b'<path')))
+if b'<path' not in _painted:
+    ok = False
+    print('   FAIL: the characters were not turned into glyph outlines, so the '
+          'painted SVG has no <path> for them at all')
+elif b'<text' in _painted:
+    print('   note: those characters are still <text>, so Qt sizes them '
+          'against the paint device.\n'
+          '         (expected only if this machine has no font with the glyphs)')
+else:
+    print('   OK: the fallback characters are painted as outlines, so their '
+          'size and fill cannot depend on the output resolution')
+
+# ------------------- 10. those characters follow the element's Font setting
+# MathJax names only a *generic* family (its default is "serif") for the
+# characters its math font lacks, so the plugin draws them in the font the text
+# element is set in -- otherwise the Font row in the formatting panel would do
+# nothing to them.  Two installed families that really contain the glyph must
+# therefore give different results.
+def families_with_glyph(char, wanted=2):
+    """Installed families that contain *char* themselves, two different ones.
+
+    QRawFont is a single face, so unlike QFontMetrics it does not report the
+    system fallback chain: this finds fonts that really have the character.
+    """
+    found = []
+    fingerprints = set()
+    for fam in ('Microsoft YaHei', 'SimSun', 'SimHei', 'KaiTi', 'FangSong',
+                'NSimSun', 'Noto Sans CJK SC', 'Arial Unicode MS',
+                'DejaVu Sans'):
+        if fam not in qt.QFontDatabase.families():
+            continue
+        try:
+            if not qt.QRawFont.fromFont(qt.QFont(fam)).supportsCharacter(char):
+                continue
+            probe = qt.QFont(fam)
+            probe.setPixelSize(200)
+            path = qt.QPainterPath()
+            path.addText(qt.QPointF(0.0, 0.0), probe, char)
+            box = path.boundingRect()
+            key = (path.elementCount(), round(box.width(), 1),
+                   round(box.height(), 1))
+        except Exception:
+            continue
+        if key in fingerprints:
+            continue                    # another name for the same face
+        fingerprints.add(key)
+        found.append(fam)
+        if len(found) >= wanted:
+            break
+    return found
+
+
+_han = MISSING_TEX[MISSING_TEX.index('{') + 1]
+_fams = families_with_glyph(_han)
+print()
+if len(_fams) < 2:
+    print('font of fallback glyphs: only %d installed family with %r, skipping '
+          'the check' % (len(_fams), _han))
+else:
+    inks = []
+    for i, fam in enumerate(_fams):
+        inks.append(ink_of(
+            glyph_doc(MISSING_TEX, GLYPH_PT, {'mathjax': True, 'font': fam}),
+            'fallback-%d' % i, SIZE_DPI))
+    print('font of fallback glyphs: %s ink=%d, %s ink=%d'
+          % (_fams[0], inks[0], _fams[1], inks[1]))
+    if inks[0] == inks[1]:
+        ok = False
+        print('   FAIL: the Font setting does not change the characters the '
+              'math font lacks, so they are drawn in some fixed font')
+    else:
+        print('   OK: a character the math font lacks is drawn in the font the '
+              'text element is set in')
+
+# ------- 11. and their size must not depend on which math font is chosen
+# MathJax sizes the characters its font lacks as 2*ex of that font, so they came
+# out 17% larger under Fira (ex/em 0.527) than under Termes (0.441), and 12%
+# smaller than a plain label of the same size.  The plugin draws them at one em
+# instead, which is exactly what a plain label at that size uses.
+_bare = MISSING_TEX[MISSING_TEX.index('{') + 1:-1]
+print()
+try:
+    _entries = json.loads((DATA / 'fonts.json').read_text(encoding='utf-8'))
+    _by_ex = sorted(_entries['fonts'], key=lambda f: f['x_height'])
+except Exception:
+    _by_ex = []
+if len(_by_ex) < 2:
+    print('math-font independence: single-font package, skipping')
+else:
+    _small, _large = _by_ex[0], _by_ex[-1]
+    _sizes = []
+    for _f, _tag in ((_small, 'exmin'), (_large, 'exmax')):
+        _sizes.append(ink_pt(MISSING_TEX, GLYPH_PT,
+                             {'mathjax': True, 'mathjaxFont': _f['id']},
+                             SIZE_DPI, 'mathfont-%s' % _tag))
+    _plain = ink_pt(_bare, GLYPH_PT, {}, SIZE_DPI, 'plainref')
+    print('math-font independence: %s (ex %.3f) %.1f x %.1f pt, %s (ex %.3f) '
+          '%.1f x %.1f pt, plain label %.1f x %.1f pt'
+          % (_small['id'], _small['x_height'], _sizes[0][0], _sizes[0][1],
+             _large['id'], _large['x_height'], _sizes[1][0], _sizes[1][1],
+             _plain[0], _plain[1]))
+    if _sizes[0][1] <= 0 or _sizes[1][1] <= 0:
+        ok = False
+        print('   FAIL: nothing was drawn for the CJK formula')
+    elif (abs(_sizes[1][0] - _sizes[0][0]) > 0.04 * _sizes[0][0]
+            or abs(_sizes[1][1] - _sizes[0][1]) > 0.04 * _sizes[0][1]):
+        ok = False
+        print('   FAIL: the characters the math font lacks change size with the '
+              'math font (%.1fx on the height) -- they should follow the Font '
+              'size, not the math font\'s ex'
+              % (_sizes[1][1] / max(_sizes[0][1], 0.01)))
+    elif _plain[1] > 0 and abs(_sizes[0][1] - _plain[1]) > 0.06 * _plain[1]:
+        ok = False
+        print('   FAIL: they do not match a plain label of the same size '
+              '(%.1fpt against %.1fpt)' % (_sizes[0][1], _plain[1]))
+    else:
+        print('   OK: the same size under every math font, and the size a plain '
+              'label uses')
 
 print()
 print('PASS' if ok else 'FAIL')
