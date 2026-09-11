@@ -46,6 +46,7 @@ both useless as evidence here; only the three checks above are.
 Non-zero exit code means one of them failed.
 """
 
+import json
 import os
 import sys
 import tempfile
@@ -236,6 +237,22 @@ def glyph_height_pt(text, size_pt, settings, dpi, tag=''):
     return (max(ys) - min(ys) + 1) * 72.0 / dpi
 
 
+def ink_of(build, name, dpi):
+    """Ink pixel count for a document, which is what tells fonts apart."""
+    doc = veusz.document.Document()
+    ifc = veusz.document.CommandInterface(doc)
+    build(ifc)
+    path = tmp / ('%s-%d.png' % (name, dpi))
+    ifc.Export(str(path), dpi=dpi)
+    img = qt.QImage(str(path)).convertToFormat(qt.QImage.Format.Format_ARGB32)
+    n = 0
+    for y in range(img.height()):
+        for x in range(img.width()):
+            if (img.pixel(x, y) >> 24) & 0xFF:
+                n += 1
+    return n
+
+
 if render('mathjax-label', label_doc) <= 0:
     ok = False
     print('FAIL: the MathJax label drew nothing')
@@ -309,6 +326,49 @@ elif display_pt < inline_pt * 1.4:
 elif inline_pt > display_pt:
     ok = False
     print('FAIL: the default is the display style, not inline')
+
+# ------------------------------------------- 7. an unset font means the default
+# The host remembers which font the bundle is loaded with, so a text that asks
+# for no particular font has to switch *back* to the package default.  It once
+# kept the last font used, and a freshly ticked label then rendered in a font
+# the chooser was not showing.
+fonts_file = DATA / 'fonts.json'
+try:
+    _fonts = json.loads(fonts_file.read_text(encoding='utf-8'))['fonts']
+    _default = json.loads(fonts_file.read_text(encoding='utf-8'))['default']
+except Exception:
+    _fonts, _default = [], None
+if len(_fonts) > 1:
+    other = next(f['id'] for f in _fonts if f['id'] != _default)
+    ink_other = ink_of(glyph_doc(r'\sum_{i=1}^{n} x_i', GLYPH_PT,
+                                 {'mathjax': True, 'mathjaxFont': other}),
+                       'font-%s' % other, SIZE_DPI)
+    ink_unset = ink_of(glyph_doc(r'\sum_{i=1}^{n} x_i', GLYPH_PT,
+                                 {'mathjax': True}),
+                       'font-unset', SIZE_DPI)
+    ink_default = ink_of(glyph_doc(r'\sum_{i=1}^{n} x_i', GLYPH_PT,
+                                   {'mathjax': True, 'mathjaxFont': _default}),
+                         'font-default', SIZE_DPI)
+    print()
+    print('font: with no font set the text must use the package default (%s)'
+          % _default)
+    print('   %-8s ink=%d    %-8s ink=%d    %-8s ink=%d'
+          % (other, ink_other, '(unset)', ink_unset, _default, ink_default))
+    if ink_unset != ink_default:
+        ok = False
+        print('   FAIL: a text with no font set did not render with the '
+              'default font -- it kept whatever was used before')
+    elif ink_unset == ink_other:
+        ok = False
+        print('   FAIL: the default and %s render identically here, so this '
+              'check cannot tell them apart' % other)
+    else:
+        print('   OK: the unset text matches the default, not the previous '
+              'font')
+else:
+    print()
+    print('font: only %d font in this package, skipping the default-font check'
+          % len(_fonts))
 
 print()
 print('PASS' if ok else 'FAIL')

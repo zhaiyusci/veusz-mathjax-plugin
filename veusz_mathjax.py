@@ -49,6 +49,7 @@ Data files, all in a ``data/`` directory next to this file:
 """
 
 import ctypes
+import json
 import os
 import sys
 import threading
@@ -138,15 +139,49 @@ def _load_quickjs(bridge):
         return None
 
 
+def _load_fonts(bundle):
+    """Which fonts the bundle carries: (list of dicts, default id).
+
+    tools/build_bundle.py writes this next to the bundle.  Each entry has an id,
+    a title for the chooser and the font's x-height, which the bridge needs to
+    turn MathJax's ex geometry into points -- every font declares its own
+    (measured 0.441 to 0.527), so one font's value is wrong for another by up to
+    19%.  A bundle without this file is treated as having a single font.
+    """
+    env = os.environ.get('VEUSZ_JSENGINES_FONTS')
+    path = Path(env) if env else (Path(bundle).parent / 'fonts.json')
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+        fonts = [f for f in data.get('fonts', []) if f.get('id')]
+        if fonts:
+            default = data.get('default')
+            if default not in [f['id'] for f in fonts]:
+                default = fonts[0]['id']
+            return fonts, default
+    except Exception:
+        pass
+    return [{'id': '', 'title': 'default', 'x_height': None}], ''
+
+
 # --------------------------------------------------------------------------
 # JS host (ctypes; the C ABI of veusz/src/mathjaxbridge)
 # --------------------------------------------------------------------------
 
 class JsHost:
+    """The bridge, plus which font the bundle is currently rendering with.
+
+    Uses the multi-bundle API (js_host_*) rather than the legacy mathjax_* one,
+    because it can call any function the bundle defines -- that is how the font
+    is switched (setFont).
+    """
+
     def __init__(self, bridge, bundle):
         self.bridge = Path(bridge)
         self.bundle = Path(bundle)
         self.svg_cache = {}
+        self.fonts, self.default_font = _load_fonts(bundle)
+        self._x_height = {f['id']: f.get('x_height') for f in self.fonts}
+        self.font = None
         self.quickjs = _load_quickjs(self.bridge)
         try:
             lib = ctypes.CDLL(str(self.bridge))
@@ -157,40 +192,41 @@ class JsHost:
                    '' if self.quickjs is not None else
                    ' -- and no QuickJS engine (%s) was found next to it'
                    % ' / '.join(_QUICKJS_NAMES[:2])))
-        lib.mathjax_initialize.argtypes = [ctypes.c_char_p]
-        lib.mathjax_initialize.restype = ctypes.c_int
-        lib.mathjax_render_svg.argtypes = [
-            ctypes.c_char_p, ctypes.c_float, ctypes.c_int, ctypes.c_char_p,
+        lib.js_host_init.argtypes = [ctypes.c_char_p]
+        lib.js_host_init.restype = ctypes.c_int
+        lib.js_host_shutdown.argtypes = [ctypes.c_int]
+        lib.js_host_shutdown.restype = None
+        lib.js_host_render.argtypes = [
+            ctypes.c_int, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_float,
+            ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
             ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_size_t),
             ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_float),
             ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_void_p)]
-        lib.mathjax_render_svg.restype = ctypes.c_int
+        lib.js_host_render.restype = ctypes.c_int
+        lib.mathjax_set_ex_height.argtypes = [ctypes.c_float]
+        lib.mathjax_set_ex_height.restype = None
         lib.mathjax_free.argtypes = [ctypes.c_void_p]
         lib.mathjax_free.restype = None
-        rc = lib.mathjax_initialize(str(self.bundle).encode('utf-8'))
-        if rc != 0:
-            raise RuntimeError('mathjax_initialize failed (rc=%d)' % rc)
+        self.handle = lib.js_host_init(str(self.bundle).encode('utf-8'))
+        if self.handle <= 0:
+            raise RuntimeError('cannot load the JavaScript bundle %s'
+                               % self.bundle)
         self.lib = lib
+        self.set_font(self.default_font)
 
-    def render(self, tex, text_size, color=None, display=False):
-        """Return (svg_bytes, width_pt, height_pt, baseline_pt).
-
-        ``display`` picks MathJax's display style -- larger fractions, limits
-        above and below the operator -- instead of the inline style, which is
-        what text in a paragraph looks like.
-        """
-        key = (tex, float(text_size), color or '', bool(display))
-        hit = self.svg_cache.get(key)
-        if hit is not None:
-            return hit
-        out_svg = ctypes.c_void_p()
+    def _call(self, fn_name, arg, size=0.0, display=0, color=None):
+        """Call a function the bundle defines; returns (text, (w, h, baseline))."""
+        out = ctypes.c_void_p()
         out_len = ctypes.c_size_t()
         w, h, b = (ctypes.c_float(), ctypes.c_float(), ctypes.c_float())
         err = ctypes.c_void_p()
-        rc = self.lib.mathjax_render_svg(
-            tex.encode('utf-8'), float(text_size), 1 if display else 0,
-            color.encode('utf-8') if color else None,
-            ctypes.byref(out_svg), ctypes.byref(out_len), ctypes.byref(w),
+        # postprocess=1: the bridge rewrites the SVG's ex units to points and
+        # applies the colour, which is what the renderer expects
+        rc = self.lib.js_host_render(
+            self.handle, fn_name.encode('utf-8'), str(arg).encode('utf-8'),
+            float(size), int(display),
+            color.encode('utf-8') if color else None, 1,
+            ctypes.byref(out), ctypes.byref(out_len), ctypes.byref(w),
             ctypes.byref(h), ctypes.byref(b), ctypes.byref(err))
         if rc != 0:
             msg = 'mathjaxbridge failed (rc=%d)' % rc
@@ -200,11 +236,55 @@ class JsHost:
                 self.lib.mathjax_free(err)
             raise RuntimeError(msg)
         try:
-            svg = ctypes.string_at(out_svg.value, out_len.value)
+            data = ctypes.string_at(out.value, out_len.value) if out.value \
+                else b''
         finally:
-            if out_svg.value:
-                self.lib.mathjax_free(out_svg)
-        result = (svg, w.value, h.value, b.value)
+            if out.value:
+                self.lib.mathjax_free(out)
+        return data, (w.value, h.value, b.value)
+
+    def set_font(self, font):
+        """Switch the bundle to another font, and tell the bridge its x-height.
+
+        1ex = size * x_height decides how MathJax's geometry becomes points, so
+        leaving the previous font's value in place would render the new one up
+        to 19% off (measured: tex 0.442, dejavu 0.519, fira 0.527).
+        """
+        font = font if font in self._x_height else self.default_font
+        if font == self.font:
+            return
+        if self.font is None or font:
+            self._call('setFont', font)
+        xh = self._x_height.get(font)
+        if xh:
+            self.lib.mathjax_set_ex_height(float(xh))
+        self.font = font
+
+    def render(self, tex, text_size, color=None, display=False, font=None):
+        """Return (svg_bytes, width_pt, height_pt, baseline_pt).
+
+        ``display`` picks MathJax's display style -- larger fractions, limits
+        above and below the operator -- instead of the inline style, which is
+        what text in a paragraph looks like.  ``font`` is the id of the font in
+        fonts.json to render with; empty or unknown means the bundle's default.
+        """
+        # Resolve to a concrete font first: an empty setting means "the
+        # default", and it must switch *back* to the default rather than keep
+        # whatever the last text used (that made a freshly ticked label show one
+        # font while the chooser showed another).
+        target = font if font in self._x_height else self.default_font
+        if target != self.font:
+            self.set_font(target)
+        key = (tex, float(text_size), color or '', bool(display), self.font)
+        hit = self.svg_cache.get(key)
+        if hit is not None:
+            return hit
+        svg, (w, h, b) = self._call(
+            'render' if display else 'renderInline', tex,
+            size=text_size, display=1 if display else 0, color=color)
+        if not svg:
+            raise RuntimeError('empty SVG')
+        result = (svg, w, h, b)
         if len(self.svg_cache) > 256:
             self.svg_cache.clear()
         self.svg_cache[key] = result
@@ -221,9 +301,16 @@ def build_renderer_class(textrender, qt, host):
     class _MathJaxRenderer(textrender._Renderer):
         """Draws MathJax output by painting the SVG, baseline taken from it."""
 
-        def __init__(self, *args, display=False, **kwargs):
+        def __init__(self, *args, display=False, mathjax_font=None, **kwargs):
             # set before super(): its __init__ calls _initText(), which measures
+            #
+            # NOTE the name: _Renderer.__init__'s second positional parameter is
+            # already called ``font`` (it is the QFont), so a keyword of that
+            # name collides with it and every call raises.  That failure was
+            # invisible -- _renderer catches exceptions and falls back to plain
+            # text -- so the font silently did nothing.
             self.display = bool(display)
+            self.font_id = mathjax_font
             super().__init__(*args, **kwargs)
 
         def _initText(self, text):
@@ -268,7 +355,7 @@ def build_renderer_class(textrender, qt, host):
                 color = None
 
             svg, w_pt, h_pt, base_pt = host.render(self.text, size, color,
-                                                   self.display)
+                                                   self.display, self.font_id)
             if not svg:
                 raise RuntimeError('empty SVG')
             scale = self._pixperpt()
@@ -373,6 +460,14 @@ def _display_style(settings):
         return False
 
 
+def _font_for_text(settings):
+    """Font id this text asked for, or None to use the bundle's default."""
+    try:
+        return getattr(settings, 'mathjaxFont', '') or None
+    except Exception:
+        return None
+
+
 def _settings_for_text(font=None):
     """The settings group the text about to be painted belongs to, or None.
 
@@ -439,27 +534,122 @@ def install(verbose=True):
             % ('bridge library' if bridge is None else 'mathjax_bundle.js'))
 
     host = JsHost(bridge, bundle)
+    fonts = host.fonts
+    default_font = host.default_font
 
     import veusz.qtall as qt
+    from veusz.setting import controls
     renderer_class = build_renderer_class(textrender, qt, host)
 
-    # ---- 1. the MathJax checkboxes on every text-bearing widget -----------
+    # ---- 1. the MathJax row on every text-bearing widget -------------------
+    # One visible setting carries the row; the other two are hidden so the
+    # panel shows a single line:  [x] MathJax   [font v]   [ ] Display style
     _orig_text_init = collections.Text.__init__
+
+    class _MathJaxRow(qt.QWidget):
+        """The MathJax switch, the font chooser and the style box in one row.
+
+        It drives three settings; veusz applies whichever one the signal names,
+        so each change goes through the normal command/undo path.
+        """
+
+        sigSettingChanged = qt.pyqtSignal(qt.QObject, object, object)
+
+        def __init__(self, setting, parent):
+            qt.QWidget.__init__(self, parent)
+            self.setting = setting
+            text = setting.parent                 # the Text settings group
+            self.display_setting = text.get('mathjaxDisplay')
+            self.font_setting = text.get('mathjaxFont')
+            self.ignore = False
+
+            layout = qt.QHBoxLayout()
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(6)
+            self.setLayout(layout)
+
+            self.check = qt.QCheckBox()
+            self.check.setToolTip('Render this text with MathJax')
+            self.check.setChecked(bool(setting.val))
+            self.check.toggled.connect(self._on_check)
+            layout.addWidget(self.check)
+
+            self.combo = qt.QComboBox()
+            for f in fonts:
+                self.combo.addItem(f.get('title') or f['id'], f['id'])
+            idx = self.combo.findData(self.font_setting.val or default_font)
+            self.combo.setCurrentIndex(max(idx, 0))
+            if len(fonts) < 2:
+                self.combo.setEnabled(False)
+                self.combo.setToolTip('this package ships one font')
+            self.combo.currentIndexChanged.connect(self._on_font)
+            layout.addWidget(self.combo, 1)
+
+            self.style = qt.QCheckBox('Display style')
+            self.style.setToolTip(
+                'Typeset as a displayed equation: larger fractions, limits '
+                'above and below.  Off typesets it inline.')
+            self.style.setChecked(bool(self.display_setting.val))
+            self.style.toggled.connect(self._on_style)
+            layout.addWidget(self.style)
+
+            for setn in (setting, self.display_setting, self.font_setting):
+                setn.setOnModified(self._sync)
+
+        def _emit(self, setn, value):
+            if not self.ignore:
+                self.sigSettingChanged.emit(self, setn, value)
+
+        def _on_check(self, state):
+            self._emit(self.setting, bool(state))
+
+        def _on_style(self, state):
+            self._emit(self.display_setting, bool(state))
+
+        def _on_font(self, _index):
+            self._emit(self.font_setting, self.combo.currentData())
+
+        @qt.pyqtSlot()
+        def _sync(self):
+            """The settings changed elsewhere: follow them."""
+            self.ignore = True
+            self.check.setChecked(bool(self.setting.val))
+            self.style.setChecked(bool(self.display_setting.val))
+            idx = self.combo.findData(self.font_setting.val or default_font)
+            if idx >= 0:
+                self.combo.setCurrentIndex(idx)
+            self.ignore = False
+
+    class _MathJaxSetting(setting.Bool):
+        """The switch, whose row also shows the font and the style."""
+
+        def makeControl(self, *args):
+            try:
+                return _MathJaxRow(self, *args)
+            except Exception:
+                return controls.Bool(self, *args)     # never lose the checkbox
 
     def _text_init(self, name, **args):
         _orig_text_init(self, name, **args)
         if 'mathjax' not in self:
-            self.add(setting.Bool(
+            self.add(_MathJaxSetting(
                 'mathjax', False,
-                descr='Render this text with MathJax',
+                descr='Render this text with MathJax (the font and the style '
+                      'are next to this box)',
                 usertext='MathJax'))
         if 'mathjaxDisplay' not in self:
             self.add(setting.Bool(
-                'mathjaxDisplay', False,
+                'mathjaxDisplay', False, hidden=True,
                 descr='Typeset as a displayed equation: larger fractions, '
                       'limits above and below the operator.  Off typesets it '
                       'inline, the way text in a paragraph looks.',
                 usertext='Display style'))
+        if 'mathjaxFont' not in self:
+            self.add(setting.Str(
+                'mathjaxFont', '', hidden=True,
+                descr='Which MathJax font to use for this text (see the font '
+                      'list in the MathJax row)',
+                usertext='Font'))
         # Documents written before 0.3.0 store the switch as "useTeX"; this
         # hidden setting forwards the old name to the new one, on load and on
         # ifc.Set() alike.
@@ -534,7 +724,8 @@ def install(verbose=True):
                     painter, font, x, y, text,
                     alignhorz=alignhorz, alignvert=alignvert, angle=angle,
                     usefullheight=usefullheight, doc=doc,
-                    display=_display_style(settings))
+                    display=_display_style(settings),
+                    mathjax_font=_font_for_text(settings))
             except Exception as e:
                 pass        # fall through to normal text rendering
         return _orig_renderer(

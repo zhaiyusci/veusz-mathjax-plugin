@@ -39,7 +39,8 @@ VERSION_FILE = PROJECT / 'VERSION'
 SHIP_DATA = (
     ('qjs.dll', 'MIT (quickjs-ng, unmodified)'),
     ('mathjaxbridge.dll', 'Apache-2.0 (this project)'),
-    ('mathjax_bundle.js', 'Apache-2.0 (MathJax 4)'),
+    ('mathjax_bundle.js', 'Apache-2.0 (MathJax 4, one or more fonts)'),
+    ('fonts.json', 'font list and x-heights (this project)'),
 )
 SHIP_FILES = ('README.md', 'LICENSE', 'NOTICE', 'THIRD_PARTY.md',
               'veusz_mathjax.py')
@@ -94,8 +95,11 @@ def quickjs_dirs():
 
 
 def build_bundle(args):
-    cmd = [sys.executable, str(PROJECT / 'tools' / 'build_bundle.py'),
-           '--font', args.font]
+    cmd = [sys.executable, str(PROJECT / 'tools' / 'build_bundle.py')]
+    if args.flavor == 'allfonts':
+        cmd.append('--all-fonts')
+    else:
+        cmd += ['--font', args.font]
     if args.trim:
         cmd.append('--trim')
     if args.no_verify:
@@ -150,9 +154,10 @@ def build_bridge():
                cwd=str(PROJECT)).returncode
 
 
-def stage_release():
+def stage_release(flavor='basic'):
     DIST.mkdir(parents=True, exist_ok=True)
-    out = DIST / ('veusz-mathjax-plugin-%s.zip' % version())
+    suffix = '' if flavor == 'basic' else '-allfonts'
+    out = DIST / ('veusz-mathjax-plugin-%s%s.zip' % (version(), suffix))
     root = 'veusz-mathjax-plugin'
     with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
         for name in SHIP_FILES:
@@ -174,8 +179,15 @@ def stage_release():
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument('--font', default='newcm')
+    ap = argparse.ArgumentParser(
+        description='Build the plugin and stage a release zip.  Two flavours '
+                    'come out of the same source: basic (one font, small) and '
+                    'allfonts (every MathJax font, with a chooser in veusz).')
+    ap.add_argument('--flavor', choices=('basic', 'allfonts'), default='basic',
+                    help='basic: one font (--font, default tex); '
+                         'allfonts: every MathJax font')
+    ap.add_argument('--font', default='tex',
+                    help='the font of a basic build (default tex: smallest)')
     ap.add_argument('--trim', action='store_true')
     ap.add_argument('--skip-quickjs', action='store_true')
     ap.add_argument('--skip-bridge', action='store_true')
@@ -189,6 +201,12 @@ def main():
     ap.add_argument('--esbuild', default=None,
                     help='path to the esbuild binary (default: from --packages)')
     args = ap.parse_args()
+
+    print('[build] flavor: %s%s' % (
+        args.flavor,
+        '' if args.flavor == 'basic' else '  (every MathJax font)'))
+    if args.flavor == 'basic':
+        print('[build]   font: %s' % args.font)
 
     qjs_src, qjs_build = quickjs_dirs()
     print('[build] QuickJS source: %s%s'
@@ -223,7 +241,7 @@ def main():
         else:
             print('    %-20s %s' % (name, 'MISSING'))
 
-    stage_release()
+    stage_release(args.flavor)
 
     if 'mathjaxbridge.dll' not in present and sys.platform == 'win32':
         print('[build] note: without the bridge the plugin cannot render; '

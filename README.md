@@ -36,6 +36,22 @@ a shared library with a single cmake flag. Drop both into `data/` and it works
 
 ---
 
+## Two packages
+
+The plugin comes in two builds, from the same source:
+
+| | fonts | download | loads in | memory |
+|---|---|---|---|---|
+| `veusz-mathjax-plugin-<version>.zip` | one — Computer Modern (TeX): the classic LaTeX look, and the smallest | ~1.8 MB | 0.13 s | +14 MB |
+| `veusz-mathjax-plugin-<version>-allfonts.zip` | eleven — New Computer Modern, Computer Modern (TeX), STIX Two, Modern, Fira, Pagella, Schola, Termes, Bonum, DejaVu, Asana | ~11 MB | 0.91 s | +72 MB |
+
+Both are installed the same way and the plugin file is identical; the only
+difference is what is inside `data/`. The memory is what the embedded MathJax
+costs once it has been used (measured on the two builds); take the one-font
+package if that matters more than having a choice, and the `allfonts` package if
+you want to pick a font. A one-font package still shows the chooser, with a
+single entry.
+
 ## Install (from a release zip)
 
 1. Unpack the zip anywhere, e.g. `C:\tools\veusz-mathjax-plugin`.
@@ -43,9 +59,13 @@ a shared library with a single cmake flag. Drop both into `data/` and it works
 2. In Veusz: **Edit → Preferences → Plugins → Add…** and pick
    `veusz_mathjax.py`. Press OK, then restart Veusz.
 3. Select any text object (label, axis label, tick labels, key, contour
-   label, …) and open its **Text** properties: there is now a **MathJax**
-   checkbox, and next to it **Display style**.  Tick MathJax and type a formula,
-   e.g.
+   label, …) and open its **Text** properties. There is now one row:
+
+   ```
+   MathJax:  [x]        [Computer Modern (TeX) v]     [ ] Display style
+   ```
+
+   Tick **MathJax** and type a formula, e.g.
 
    ```
    x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}
@@ -70,21 +90,26 @@ file.
 
 ## Use
 
-* The **MathJax** checkbox lives with the text settings of each widget: labels
-  and axis labels have their own, tick labels have theirs under the axis's
-  *TickLabels* settings, the key has its own, and so on. Each is independent —
-  switching one on never switches another on. It is an ordinary Veusz setting,
-  so it is saved in `.vsz` documents like any other.
-* **Display style** is the second checkbox, next to MathJax, and it is off by
-  default, which typesets the formula *inline*, the way it would look in a
-  sentence: compact fractions and sub/superscripts instead of limits above and
-  below. Turn it on for a standalone equation, where LaTeX would use
-  `\[ … \]` rather than `$ … $`. It only changes formulas that contain
-  something style-sensitive; a plain `\alpha (rad)` looks identical either way.
-  Measured on `\frac{a}{b}` at 20pt: 21.6pt of paper inline against 36.5pt with
-  Display style — the same 1.7× you get from `$…$` versus `\[…\]` in LaTeX.
-* The formula takes its colour from the current pen; changing the colour or the
-  font size re-renders it, and results are cached per (text, size, colour, style).
+* The **MathJax** row carries three things at once: the switch, the font
+  chooser, and **Display style**. They are independent per text element, so an
+  axis label and its tick numbers can be set up differently.
+* **Display style** is off by default, which typesets the formula *inline*, the
+  way it would look in a sentence: compact fractions and sub/superscripts
+  instead of limits above and below. Turn it on for a standalone equation, where
+  LaTeX would use `\[ … \]` rather than `$ … $`. It only changes formulas that
+  contain something style-sensitive; a plain `\alpha (rad)` looks identical
+  either way. Measured on `\frac{a}{b}` at 20pt: 21.6pt of paper inline against
+  36.5pt with Display style — the same 1.7× you get from `$…$` versus `\[…\]` in
+  LaTeX.
+* The **font** list is whatever the package carries. Each font is typeset at the
+  size you asked for, not merely scaled: every MathJax font declares its own
+  x-height (measured 0.441 to 0.527), and the plugin hands the right value to
+  the renderer when the font changes. Using one font's value for another would
+  render it up to 19% off — that is the bug class that made formulas 33% too
+  large in 0.2.0.
+* The formula takes its colour from the current pen; changing the colour, the
+  size or the font re-renders it, and results are cached per (text, size,
+  colour, style, font).
 * If anything goes wrong (a MathJax error, a missing data file), the plugin falls
   back to the normal text renderer instead of breaking the plot — the label then
   shows the source text, and the reason appears at startup and in the log.
@@ -110,9 +135,14 @@ unicode  verb  textmacros  textcomp  cases
 
 That covers AMS math, matrices and `cases`, `\mathbb`/`\mathfrak`/`\mathcal`/
 `\mathsf`/`\mathtt`, `\xrightarrow`, `\ce{2H2 + O2 -> 2H2O}`, `\dv{f}{x}`,
-`\qty(…)` and the rest of those packages. The font is MathJax 4's default, New
-Computer Modern, bundled with all 40 of its glyph ranges inlined, which also
-covers Greek, Cyrillic, Hebrew, Devanagari and Cherokee inside a formula.
+`\qty(…)` and the rest of those packages.
+
+The fonts are MathJax's own, with their glyph ranges inlined (the embedded
+engine cannot fetch anything at render time), so Greek, Cyrillic, Hebrew,
+Devanagari and Cherokee inside a formula come out as real glyphs. Which fonts
+you have depends on the package: Computer Modern (TeX) alone in the small one,
+eleven in the `allfonts` one. The glyph ranges shipped are the font's own full
+set — 40 of 40 for New Computer Modern, for instance.
 
 The formula is placed using the baseline MathJax reports, so TeX labels line up
 with each other and with plain text, and it is drawn as paths, so vector exports
@@ -126,7 +156,9 @@ A release zip unpacks to exactly this:
 veusz-mathjax-plugin/
   veusz_mathjax.py       the plugin — the file you add to Veusz
   data/
-    mathjax_bundle.js    MathJax 4 + fonts, bundled with esbuild      (~12 MB)
+    mathjax_bundle.js    MathJax 4 + the package's fonts, bundled with esbuild
+                         (~3 MB in the one-font package, ~32 MB with all eleven)
+    fonts.json           which fonts are in the bundle, and their x-heights
     mathjaxbridge.dll    the JS host, built from src/mathjax_bridge.cpp
     qjs.dll              QuickJS (quickjs-ng), imported by the bridge (~1 MB)
   README.md
@@ -140,10 +172,10 @@ The source repository additionally has `src/` (the bridge), `tools/` (the build
 scripts), `test/` and `VERSION`.
 
 The data files are found through `VEUSZ_JSENGINES_BRIDGE` /
-`VEUSZ_JSENGINES_BUNDLE` / `VEUSZ_JSENGINES_QUICKJS` first, then in `data/` next
-to the plugin file (and next to its parent, so several plugins can share one
-`data/`). The folder can therefore be moved anywhere, as long as it is kept
-together.
+`VEUSZ_JSENGINES_BUNDLE` / `VEUSZ_JSENGINES_QUICKJS` (and `VEUSZ_JSENGINES_FONTS`
+for the font list) first, then in `data/` next to the plugin file (and next to
+its parent, so several plugins can share one `data/`). The folder can therefore
+be moved anywhere, as long as it is kept together.
 
 ## Troubleshooting
 
@@ -178,10 +210,25 @@ git clone https://github.com/quickjs-ng/quickjs.git quickjs-src
 src/build-quickjs-windows.cmd          # builds and installs data/qjs.dll
 
 # 2. build everything and stage a release zip in dist/
-python tools/build_all.py                 # add --font tex for a 3 MB bundle
-                                          #         --trim to drop rare scripts
-                                          #         --skip-quickjs / --skip-bridge
-                                          #         to rebuild only part of it
+python tools/build_all.py                 # basic: one font (--font, default tex)
+python tools/build_all.py --flavor allfonts   # every MathJax font, ~11 MB zip
+                                          # add --trim to drop rare scripts
+                                          #     --skip-quickjs / --skip-bridge
+                                          #     to rebuild only part of it
+```
+
+`--flavor allfonts` builds one bundle holding every font (New Computer Modern,
+Computer Modern (TeX), STIX Two, Modern, Fira, Pagella, Schola, Termes, Bonum,
+DejaVu, Asana) — 32 MB of JavaScript in one file, 0.91 s to load, +72 MB of
+memory once MathJax is used. The basic build is one font and costs 0.13 s and
++14 MB. Both expose the same `setFont()` to the plugin, so the plugin file does
+not depend on which flavour it is given.
+
+Just the bundle, for a quick experiment:
+
+```bash
+python tools/build_bundle.py --fonts tex,stix2     # or --all-fonts, --font NAME
+python tools/build_bundle.py --list-fonts          # what is available
 ```
 
 The scripts look for the quickjs-ng checkout in `quickjs-src/` **inside** this
@@ -234,33 +281,48 @@ was rendered.
 ## How it works
 
 Veusz's plugin system executes a Python file at startup, so this plugin has
-access to Veusz's internals. It uses exactly five hooks:
+access to Veusz's internals. It uses exactly six hooks:
 
-1. **Settings** — wraps `veusz.setting.collections.Text.__init__` to add the
-   `mathjax` and `mathjaxDisplay` booleans to every text-bearing widget, plus a
-   hidden `useTeX` that forwards to `mathjax` so documents written with the
-   older name keep working. The properties panel is generated from the settings
-   tree, so the checkboxes appear by themselves and are saved in `.vsz` files
-   like any other setting.
-2. **Which text is this?** — wraps `makeQFont` of the text settings class.
+1. **Settings** — wraps `veusz.setting.collections.Text.__init__` to add three
+   settings to every text-bearing widget: `mathjax` (the switch, whose row also
+   carries the other two), `mathjaxDisplay` and `mathjaxFont`, the last two
+   hidden so the panel shows a single line. A hidden `useTeX` forwards to
+   `mathjax`, so documents written with the older name keep working. The
+   properties panel is generated from the settings tree, so the row appears by
+   itself and is saved in `.vsz` files like any other setting.
+2. **One row, three controls** — the switch's `makeControl` returns a small
+   composite widget holding the check box, the font chooser and the Display
+   style box. It emits `sigSettingChanged` naming *whichever* of the three
+   settings changed, which is how a single row can drive three of them through
+   Veusz's normal command/undo path. If that widget cannot be built for any
+   reason, the plugin falls back to a plain check box rather than losing the
+   switch.
+3. **Which text is this?** — wraps `makeQFont` of the text settings class.
    Every widget builds the font of a text element from that element's own
    settings group just before drawing it (`s.get('TickLabels').makeQFont(
    painter)` for the tick numbers, `s.get('Label').makeQFont(painter)` for an
    axis label, `s.get('Text')` for a label or a key), so recording which group
    made the font tells the renderer which group the text belongs to. Without
    this, an axis's *MathJax* on the label would drag its tick numbers along.
-3. **Widget wiring** — wraps `draw` of every registered widget class to publish
+4. **Widget wiring** — wraps `draw` of every registered widget class to publish
    the widget's own settings as a fallback, for text painted without a
    `makeQFont` of its own. No widget internals are touched. The search also
    looks into nested groups (`settings.ticklabels`, `settings.label`, …),
    because an axis keeps its text settings there.
-4. **Renderer** — wraps `veusz.utils.Renderer`, the single place every widget
+5. **Renderer** — wraps `veusz.utils.Renderer`, the single place every widget
    paints text through: for text whose settings group asked for MathJax it
    returns its own renderer, otherwise the original one.
-5. **Drawing** — the renderer asks the bridge for the SVG of the formula, draws
+6. **Drawing** — the renderer asks the bridge for the SVG of the formula, draws
    it with Qt's SVG renderer, rotates it if the label is rotated, and positions
    it using the baseline MathJax reports (`vertical-align`). Colour comes from
-   the current pen, and results are cached per (text, size, colour).
+   the current pen, and results are cached per (text, size, colour, style,
+   font).
+
+The bridge is called through its multi-bundle API (`js_host_*`) rather than the
+older `mathjax_*` one, because that can call *any* function the bundle defines —
+`setFont` included. Switching font also re-sets the bridge's ex-height from
+`fonts.json`, since `1ex = size × x_height` decides how MathJax's geometry
+becomes points and every font declares its own (0.441 to 0.527 measured).
 
 The native bridge (`src/mathjax_bridge.cpp`) is a small **JS host**: it
 evaluates a bundle inside QuickJS and calls the `render()` / `renderInline()`
@@ -294,9 +356,11 @@ copy of it, so `data/` holds three artefacts with one licence each (see
 * Rendering is synchronous: the first paint of a formula costs a few
   milliseconds (then it is cached). Very large documents with hundreds of
   distinct TeX labels will feel that on the first draw.
-* The MathJax bundle is ~12 MB (3 MB with `--font tex`, ~7 MB with `--trim`),
-  the QuickJS engine is ~1 MB and the bridge ~41 KB. Nothing of that is in
-  upstream Veusz.
+* What it costs: the one-font package adds 14 MB of memory once MathJax is used
+  and 0.13 s to startup; the `allfonts` package adds 72 MB and 0.91 s, because
+  every font's glyph tables have to be in the engine at once. Nothing of that is
+  in upstream Veusz, and none of it is paid at all until a label asks for
+  MathJax.
 * `\text{中文}` (CJK inside a formula) needs a font that has those glyphs; the
   bundled math font does not, and Veusz's fallback for SVG text is limited.
   CJK in plain (non-TeX) labels is unaffected — that is Veusz's own text path.

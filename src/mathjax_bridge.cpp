@@ -804,4 +804,20 @@ MJX_EXPORT void mathjax_free(void* p) {
     free(p);
 }
 
+// 换字体时必须重设 ex-height: 每个 MathJax 字体声明的 x-height 不同
+// (newcm 0.442 / pagella 0.482 / stix2 0.479 / dejavu 0.519 ...),而
+// 1ex = text_size * x-height 决定了 SVG 尺寸换算,写死一个值会让别的字体
+// 整体偏大或偏小(dejavu 会小 17%)。
+// 插件在切换字体时调用,值来自 fonts.json (构建时从字体包读出)。
+MJX_EXPORT void mathjax_set_ex_height(float value) {
+    if (value > 0.05f && value < 2.0f) {
+        g_ex_height = value;
+    }
+}
+
+// 供测试/诊断: 读出当前使用的 ex-height
+MJX_EXPORT float mathjax_get_ex_height(void) {
+    return g_ex_height;
+}
+
 }  // extern "C"
