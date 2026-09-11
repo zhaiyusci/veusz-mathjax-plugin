@@ -30,6 +30,12 @@ reason and the messages should say which:
    that catches a formula rendered at the wrong size -- a 33% error shipped
    once because nothing measured it.
 
+5. **The old setting name still works.**  Before 0.3.0 the switch was called
+   `useTeX`; it forwards to `mathjax`, so it must still render as MathJax.
+
+6. **The Display style switch works.**  Inline is the default, so `\\frac{a}{b}`
+   must be short by default and markedly taller with Display style ticked.
+
 Note for anyone tempted to simplify this: comparing the TeX label against the
 same label with `useTeX` off does **not** work as a check.  Measured on a broken
 install -- bridge present, engine unloadable -- those two images come out with
@@ -125,18 +131,18 @@ import veusz.utils                                              # noqa: E402
 import veusz.windows.mainwindow                                 # noqa: E402,F401
 
 original_renderer = veusz.utils.Renderer
-before = 'useTeX' in veusz.setting.collections.Text('probe').__dict__['setdict']
+before = 'mathjax' in veusz.setting.collections.Text('probe').__dict__['setdict']
 
 del os.environ['VEUSZ_MATHJAX_DEFER']       # let the copy veusz loads install
 veusz.document.Document.loadPlugins(pluginlist=[str(PLUGIN)])
 
-after = 'useTeX' in veusz.setting.collections.Text('probe').__dict__['setdict']
-print('Text.useTeX:', before, '->', after)
+after = 'mathjax' in veusz.setting.collections.Text('probe').__dict__['setdict']
+print('Text.mathjax:', before, '->', after)
 if not after:
-    die('the plugin added no useTeX setting, so it did not install -- see '
+    die('the plugin added no mathjax setting, so it did not install -- see '
         'veusz_mathjax.log next to the plugin file')
 if veusz.utils.Renderer is original_renderer:
-    die('the plugin added the useTeX setting but never replaced '
+    die('the plugin added the mathjax setting but never replaced '
         'veusz.utils.Renderer, so nothing would be rendered through MathJax.\n'
         '      install() failed -- see veusz_mathjax.log next to the plugin '
         'file')
@@ -174,7 +180,7 @@ def label_doc(ifc):
     ifc.To(page)
     ifc.Add('label', name='lbl')
     ifc.Set('lbl/label', LABEL_TEX)
-    ifc.Set('lbl/Text/useTeX', True)
+    ifc.Set('lbl/Text/mathjax', True)
     ifc.Set('lbl/Text/size', '20pt')
 
 
@@ -187,7 +193,7 @@ def axis_doc(ifc):
     ifc.To('g')
     ifc.Add('xy', xData='x', yData='y')
     ifc.Set('x/label', r'\alpha (rad)')
-    ifc.Set('x/Label/useTeX', True)
+    ifc.Set('x/Label/mathjax', True)
 
 
 def plain_doc(ifc):
@@ -197,25 +203,30 @@ def plain_doc(ifc):
     ifc.Set('lbl/label', 'plain text label')
 
 
-def glyph_doc(text, size_pt, usetex):
-    """One glyph on a page, so its ink bounding box is the glyph itself."""
+def glyph_doc(text, size_pt, settings):
+    """One glyph on a page, so its ink bounding box is the glyph itself.
+
+    ``settings`` maps a Text setting name to its value, e.g.
+    ``{'mathjax': True, 'mathjaxDisplay': True}``.
+    """
     def build(ifc):
         page = ifc.Add('page')
         ifc.To(page)
         ifc.Add('label', name='lbl')
         ifc.Set('lbl/label', text)
         ifc.Set('lbl/Text/size', '%gpt' % size_pt)
-        ifc.Set('lbl/Text/useTeX', usetex)
+        for name, value in settings.items():
+            ifc.Set('lbl/Text/%s' % name, value)
 
     return build
 
 
-def glyph_height_pt(text, size_pt, usetex, dpi):
+def glyph_height_pt(text, size_pt, settings, dpi, tag=''):
     """Ink height of a single glyph, in points of paper (so: dpi-independent)."""
     doc = veusz.document.Document()
     ifc = veusz.document.CommandInterface(doc)
-    glyph_doc(text, size_pt, usetex)(ifc)
-    path = tmp / ('glyph-%s-%d.png' % ('tex' if usetex else 'plain', dpi))
+    glyph_doc(text, size_pt, settings)(ifc)
+    path = tmp / ('glyph-%s-%d.png' % (tag or 'x', dpi))
     ifc.Export(str(path), dpi=dpi)
     img = qt.QImage(str(path)).convertToFormat(qt.QImage.Format.Format_ARGB32)
     ys = [y for y in range(img.height())
@@ -225,12 +236,12 @@ def glyph_height_pt(text, size_pt, usetex, dpi):
     return (max(ys) - min(ys) + 1) * 72.0 / dpi
 
 
-if render('tex-label', label_doc) <= 0:
+if render('mathjax-label', label_doc) <= 0:
     ok = False
-    print('FAIL: the TeX label drew nothing')
-if render('tex-axis', axis_doc) <= 0:
+    print('FAIL: the MathJax label drew nothing')
+if render('mathjax-axis', axis_doc) <= 0:
     ok = False
-    print('FAIL: the TeX axis label drew nothing')
+    print('FAIL: the MathJax axis label drew nothing')
 if render('plain', plain_doc) <= 0:
     ok = False
     print('FAIL: an ordinary label drew nothing (the plugin broke normal text)')
@@ -244,15 +255,16 @@ EXPECTED_PT = CAP_HEIGHT_EM * GLYPH_PT          # 13.66 pt
 TOLERANCE = 0.06                 # ink bounding-box rounding at this dpi
 SIZE_DPI = 150
 
-tex_pt = glyph_height_pt(r'\mathrm{H}', GLYPH_PT, True, SIZE_DPI)
-plain_pt = glyph_height_pt('H', GLYPH_PT, False, SIZE_DPI)
+tex_pt = glyph_height_pt(r'\mathrm{H}', GLYPH_PT, {'mathjax': True}, SIZE_DPI,
+                         'mathjax')
+plain_pt = glyph_height_pt('H', GLYPH_PT, {}, SIZE_DPI, 'plain')
 print()
 print('size: at %gpt, \\mathrm{H} is %.2f pt of paper (%.3f em of the requested '
       'size); a plain H is %.2f pt of paper'
       % (GLYPH_PT, tex_pt, tex_pt / GLYPH_PT, plain_pt))
 if tex_pt <= 0:
     ok = False
-    print('FAIL: could not measure the TeX glyph')
+    print('FAIL: could not measure the MathJax glyph')
 elif abs(tex_pt - EXPECTED_PT) > TOLERANCE * EXPECTED_PT:
     ok = False
     print('FAIL: expected about %.2f pt for a %gpt formula, measured %.2f pt '
@@ -262,8 +274,41 @@ elif abs(tex_pt - EXPECTED_PT) > TOLERANCE * EXPECTED_PT:
              100.0 * (tex_pt - EXPECTED_PT) / EXPECTED_PT))
 if plain_pt > 0 and tex_pt > 0 and not (0.75 < tex_pt / plain_pt < 1.25):
     ok = False
-    print('FAIL: TeX text is %.2fx the height of ordinary text at the same '
+    print('FAIL: MathJax text is %.2fx the height of ordinary text at the same '
           'point size' % (tex_pt / plain_pt))
+
+# ------------------------------------ 5. the old setting name still works
+# Documents written before 0.3.0 store the switch as useTeX; it has to keep
+# rendering as MathJax through the forwarded setting.
+old_pt = glyph_height_pt(r'\mathrm{H}', GLYPH_PT, {'useTeX': True}, SIZE_DPI,
+                         'oldname')
+print('old name: useTeX=True measures %.2f pt, mathjax=True measures %.2f pt'
+      % (old_pt, tex_pt))
+if abs(old_pt - tex_pt) > 0.5:
+    ok = False
+    print('FAIL: the old setting name useTeX renders differently from mathjax '
+          '(%.2f vs %.2f pt)' % (old_pt, tex_pt))
+
+# ------------------------------------------- 6. the Display style switch
+# Inline is the default, so a fraction must be short by default and tall when
+# Display style is ticked.
+inline_pt = glyph_height_pt(r'\frac{a}{b}', GLYPH_PT, {'mathjax': True},
+                            SIZE_DPI, 'inline')
+display_pt = glyph_height_pt(r'\frac{a}{b}', GLYPH_PT,
+                             {'mathjax': True, 'mathjaxDisplay': True},
+                             SIZE_DPI, 'display')
+print('style: \\frac{a}{b} at %gpt is %.2f pt of paper inline (the default) and '
+      '%.2f pt with Display style' % (GLYPH_PT, inline_pt, display_pt))
+if inline_pt <= 0 or display_pt <= 0:
+    ok = False
+    print('FAIL: could not measure the fraction')
+elif display_pt < inline_pt * 1.4:
+    ok = False
+    print('FAIL: Display style does not make the fraction bigger (%.2f vs %.2f '
+          'pt) -- is the switch wired up?' % (display_pt, inline_pt))
+elif inline_pt > display_pt:
+    ok = False
+    print('FAIL: the default is the display style, not inline')
 
 print()
 print('PASS' if ok else 'FAIL')
