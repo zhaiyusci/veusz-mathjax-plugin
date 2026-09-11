@@ -36,21 +36,39 @@ a shared library with a single cmake flag. Drop both into `data/` and it works
 
 ---
 
-## Two packages
+## Which package?
 
-The plugin comes in two builds, from the same source:
+Both zips install the same way and contain the same plugin; only the fonts
+inside `data/` differ. The choice is about what the formula should look like
+next to the rest of your figure.
+
+**`veusz-mathjax-plugin-<version>.zip` — 1.8 MB — "I just want proper-looking formulas."**
+One font, **Computer Modern (TeX)**: the face LaTeX has used for decades, and
+what most people expect a formula to look like. Nothing to choose, smallest
+download, and the lightest: 0.13 s to start, +14 MB of memory.
+
+**`veusz-mathjax-plugin-<version>-allfonts.zip` — 11 MB — "the math should
+match the rest of the figure."**
+Eleven faces, chosen per text element in the MathJax row: New Computer Modern
+(MathJax's own default), Computer Modern (TeX), Modern, **STIX Two** and
+**Termes** (Times-like), **Pagella** (Palatino-like), **Schola** (Charter-like),
+**Bonum** (bookman-like), and **Fira**, **DejaVu**, **Asana** (sans). If the text
+around your formulas is not Computer Modern — a Times-like figure, a sans-serif
+poster, whatever the journal asks for — this is how you stop the math from
+clashing with it. Cost: 0.91 s to start, +72 MB of memory.
 
 | | fonts | download | loads in | memory |
 |---|---|---|---|---|
-| `veusz-mathjax-plugin-<version>.zip` | one — Computer Modern (TeX): the classic LaTeX look, and the smallest | ~1.8 MB | 0.13 s | +14 MB |
-| `veusz-mathjax-plugin-<version>-allfonts.zip` | eleven — New Computer Modern, Computer Modern (TeX), STIX Two, Modern, Fira, Pagella, Schola, Termes, Bonum, DejaVu, Asana | ~11 MB | 0.91 s | +72 MB |
+| `…-<version>.zip` | 1 — Computer Modern (TeX) | 1.8 MB | 0.13 s | +14 MB |
+| `…-<version>-allfonts.zip` | 11 | 11 MB | 0.91 s | +72 MB |
 
-Both are installed the same way and the plugin file is identical; the only
-difference is what is inside `data/`. The memory is what the embedded MathJax
-costs once it has been used (measured on the two builds); take the one-font
-package if that matters more than having a choice, and the `allfonts` package if
-you want to pick a font. A one-font package still shows the chooser, with a
-single entry.
+Those costs are measured, and they are only paid once a label actually asks for
+MathJax; a plot with no TeX text never loads the engine at all.
+
+You can change your mind later: download the other zip and replace the plugin
+folder. Documents keep their settings, and a document that names a font the
+package does not carry falls back to that package's font. The one-font package
+still shows the chooser — it just has a single entry.
 
 ## Install (from a release zip)
 
