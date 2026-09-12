@@ -2,5 +2,6 @@
   "name": "@mathjax/mathjax-lete-font",
   "version": "1.0.0",
   "description": "Lete Sans Math for MathJax v4 (generated)",
+  "title": "Lete Sans Math",
   "license": "OFL-1.1"
 }

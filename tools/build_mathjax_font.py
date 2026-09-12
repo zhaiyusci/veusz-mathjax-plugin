@@ -655,6 +655,7 @@ export function CommonMathJax{args.name.capitalize()}FontMixin(Base) {{
         'name': '@mathjax/mathjax-%s-font' % args.name,
         'version': args.version,
         'description': '%s for MathJax v4 (generated)' % args.title,
+        'title': args.title,
         'license': args.license,
     }, indent=2) + '\n', encoding='utf-8')
     (out / 'mjs' / 'package.json').write_text('{\n  "type": "module"\n}\n',

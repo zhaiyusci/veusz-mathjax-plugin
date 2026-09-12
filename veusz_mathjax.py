@@ -108,12 +108,31 @@ def _find_bridge(here):
 
 
 def _find_bundle(here):
-    cands = [os.environ.get('VEUSZ_JSENGINES_BUNDLE')]
-    if here:
-        cands += [here / 'data' / 'mathjax_bundle.js',
-                  here / 'mathjax_bundle.js',
-                  here.parent / 'data' / 'mathjax_bundle.js']
-    return _first_existing(cands)
+    """The bundle to load first, and the one whose fonts are the default.
+
+    The usual name wins if it is there.  Otherwise the first *.js in the data
+    directory that says what it carries -- so a data/ holding nothing but a font
+    bundle someone dropped in works as it is, with nothing renamed and no list
+    to keep in step.  (see _discover_fonts for the rest of the directory).
+    """
+    env = os.environ.get('VEUSZ_JSENGINES_BUNDLE')
+    if env and Path(env).exists():
+        return Path(env)
+    if not here:
+        return None
+    found = _first_existing([here / 'data' / 'mathjax_bundle.js',
+                             here / 'mathjax_bundle.js',
+                             here.parent / 'data' / 'mathjax_bundle.js'])
+    if found is not None:
+        return found
+    for directory in (here / 'data', here, here.parent / 'data'):
+        if not directory.is_dir():
+            continue
+        declared = sorted(p for p in directory.glob('*.js')
+                          if _declared_fonts(p, sidecar=False) is not None)
+        if declared:
+            return declared[0]
+    return None
 
 
 _QUICKJS_NAMES = ('qjs.dll', 'libqjs.so', 'libqjs.dylib',
@@ -151,28 +170,142 @@ def _load_quickjs(bridge):
         return None
 
 
-def _load_fonts(bundle):
-    """Which fonts the bundle carries: (list of dicts, default id).
+def _declared_fonts(bundle, sidecar=True):
+    """What a single bundle file says it carries: (fonts, default) or None.
 
-    tools/build_bundle.py writes this next to the bundle.  Each entry has an id,
-    a title for the chooser and the font's x-height, which the bridge needs to
-    turn MathJax's ex geometry into points -- every font declares its own
-    (measured 0.441 to 0.527), so one font's value is wrong for another by up to
-    19%.  A bundle without this file is treated as having a single font.
+    A bundle is self-describing: tools/build_bundle.py writes a one-line
+    ``// MATHJAX-FONT {...}`` header into it, and this reads that header without
+    running the file -- so a bundle that was dropped into data/ can be offered
+    in the chooser without being loaded first.  The older form, a fonts.json
+    written beside the bundle, is still read for bundles built before the header
+    existed.
     """
-    env = os.environ.get('VEUSZ_JSENGINES_FONTS')
-    path = Path(env) if env else (Path(bundle).parent / 'fonts.json')
     try:
-        data = json.loads(path.read_text(encoding='utf-8'))
-        fonts = [f for f in data.get('fonts', []) if f.get('id')]
-        if fonts:
-            default = data.get('default')
-            if default not in [f['id'] for f in fonts]:
-                default = fonts[0]['id']
-            return fonts, default
+        with open(bundle, 'r', encoding='utf-8', errors='replace') as handle:
+            head = handle.read(16384)
     except Exception:
-        pass
+        head = ''
+    m = re.search(r'^// MATHJAX-FONT (\{.*\})\s*$', head, re.M)
+    if m:
+        try:
+            data = json.loads(m.group(1))
+        except Exception:
+            data = None
+        if data:
+            fonts = [f for f in data.get('fonts', []) if f.get('id')]
+            if fonts:
+                return fonts, data.get('default')
+    if sidecar:
+        path = Path(bundle).parent / 'fonts.json'
+        if path.exists():
+            try:
+                data = json.loads(path.read_text(encoding='utf-8'))
+            except Exception:
+                return None
+            fonts = [f for f in data.get('fonts', []) if f.get('id')]
+            if fonts:
+                return fonts, data.get('default')
+    return None
+
+
+def _load_fonts(bundle):
+    """Which fonts this bundle carries: (list of dicts, default id)."""
+    env = os.environ.get('VEUSZ_JSENGINES_FONTS')
+    found = _declared_fonts(bundle, sidecar=True) if not env else None
+    if env and Path(env).exists():
+        try:
+            data = json.loads(Path(env).read_text(encoding='utf-8'))
+            fonts = [f for f in data.get('fonts', []) if f.get('id')]
+            found = (fonts, data.get('default')) if fonts else None
+        except Exception:
+            found = None
+    if found:
+        fonts, default = found
+        if default not in [f['id'] for f in fonts]:
+            default = fonts[0]['id']
+        return fonts, default
     return [{'id': '', 'title': 'default', 'x_height': None}], ''
+
+
+def _discover_fonts(here, bundle):
+    """Every font the plugin's data directory offers, and the default id.
+
+    The bundle the plugin was pointed at is always there.  Beyond it, any other
+    ``*.js`` beside it that declares itself is taken as well, each carrying the
+    file it came from -- so a font bundle dropped into ``data/`` shows up in the
+    chooser after a restart, with nothing to keep in step by hand.  A bundle
+    that declares nothing is only ever loaded as the configured default.
+    """
+    fonts = []
+    default_id = ''
+    seen = set()
+    candidates = [Path(bundle)]
+    if here:
+        data_dir = Path(bundle).parent
+        try:
+            candidates += sorted(p for p in data_dir.glob('*.js')
+                                 if p != Path(bundle))
+        except Exception:
+            pass
+    for index, path in enumerate(candidates):
+        try:
+            is_default = Path(path) == Path(bundle)
+        except Exception:
+            is_default = False
+        declared = _declared_fonts(path, sidecar=is_default)
+        if declared is None:
+            if not is_default:
+                continue
+            declared = ([{'id': '', 'title': 'default', 'x_height': None}], '')
+        bundle_fonts, bundle_default = declared
+        for font in bundle_fonts:
+            font_id = font.get('id') or ''
+            if font_id in seen:
+                continue
+            seen.add(font_id)
+            entry = dict(font)
+            entry['bundle'] = str(path)
+            fonts.append(entry)
+            if is_default and font_id == (bundle_default or bundle_fonts[0]['id']):
+                default_id = font_id
+    if not fonts:
+        return [{'id': '', 'title': 'default', 'x_height': None,
+                 'bundle': str(bundle)}], ''
+    if default_id not in [f['id'] for f in fonts]:
+        default_id = fonts[0]['id']
+    return fonts, default_id
+
+
+class _HostSet(object):
+    """The JS hosts, one per bundle, created when a font is first used.
+
+    A dropped-in bundle is a whole MathJax (the core plus its font), so a font
+    nobody selects costs nothing: no host, no memory, no parse.  A bundle that
+    carries several fonts -- the released packages do -- is switched with the
+    font id, which is what JsHost.render() already takes.
+    """
+
+    def __init__(self, bridge, fonts, default_font):
+        self.bridge = bridge
+        self.fonts = fonts
+        self.default_font = default_font
+        self._by_id = dict((f['id'], f) for f in fonts)
+        self._hosts = {}
+
+    def spec(self, font_id):
+        return self._by_id.get(font_id) or self._by_id.get(self.default_font)
+
+    def host_for(self, font_id):
+        """The host that can draw this font id (falls back to the default)."""
+        spec = self.spec(font_id)
+        if spec is None:
+            return None
+        path = spec.get('bundle')
+        host = self._hosts.get(path)
+        if host is None:
+            host = JsHost(self.bridge, path)
+            self._hosts[path] = host
+        return host
 
 
 # --------------------------------------------------------------------------
@@ -307,7 +440,7 @@ class JsHost:
 # renderer
 # --------------------------------------------------------------------------
 
-def build_renderer_class(textrender, qt, host):
+def build_renderer_class(textrender, qt, hosts):
     """Create the MathJax renderer class (needs the veusz modules to subclass)."""
 
     # -- SVG <text> --------------------------------------------------------
@@ -611,6 +744,7 @@ def build_renderer_class(textrender, qt, host):
             except Exception:
                 color = None
 
+            host = hosts.host_for(self.font_id)
             svg, w_pt, h_pt, base_pt = host.render(self.text, size, color,
                                                    self.display, self.font_id)
             if not svg:
@@ -794,13 +928,12 @@ def install(verbose=True):
             'VEUSZ_JSENGINES_BRIDGE / VEUSZ_JSENGINES_BUNDLE.'
             % ('bridge library' if bridge is None else 'mathjax_bundle.js'))
 
-    host = JsHost(bridge, bundle)
-    fonts = host.fonts
-    default_font = host.default_font
+    fonts, default_font = _discover_fonts(here, bundle)
+    hosts = _HostSet(bridge, fonts, default_font)
 
     import veusz.qtall as qt
     from veusz.setting import controls
-    renderer_class = build_renderer_class(textrender, qt, host)
+    renderer_class = build_renderer_class(textrender, qt, hosts)
 
     # ---- 1. the MathJax row on every text-bearing widget -------------------
     # One visible setting carries the row; the other two are hidden so the
@@ -1029,7 +1162,7 @@ def install(verbose=True):
     except Exception:
         pass
     return {'bridge': str(bridge), 'bundle': str(bundle),
-            'widgets': wrapped, 'host': host}
+            'widgets': wrapped, 'hosts': hosts, 'fonts': fonts}
 
 
 def _auto_install():

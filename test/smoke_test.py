@@ -103,7 +103,10 @@ except ImportError as exc:
 print('bridge      :', BRIDGE.name)
 print('engine      :', ENGINE.name)
 try:
-    host = plugin_module.JsHost(BRIDGE, BUNDLE)
+    fonts, default_font = plugin_module._discover_fonts(
+        plugin_module._plugin_dir(), BUNDLE)
+    hosts = plugin_module._HostSet(BRIDGE, fonts, default_font)
+    host = hosts.host_for(default_font)
     svg, w, h, baseline = host.render(r'\frac{a}{b}', 12.0)
 except Exception as exc:                                   # noqa: BLE001
     die('the engine did not load or render: %s\n'
@@ -111,6 +114,8 @@ except Exception as exc:                                   # noqa: BLE001
         'plugin file)' % exc)
 if not svg or b'<svg' not in svg[:600]:
     die('the engine returned something that is not SVG: %r' % svg[:120])
+print('fonts       :', ', '.join(f['id'] or '(default)' for f in fonts),
+      '(default %s)' % (default_font or '(unnamed)'))
 print('engine check: rendered %d bytes of SVG (%.2f x %.2f pt, baseline %.2f)'
       % (len(svg), w, h, baseline))
 
@@ -440,7 +445,7 @@ else:
 # in an export alike.  Build the renderer by hand and look at what it will paint.
 import veusz.utils.textrender as _textrender                        # noqa: E402
 
-_renderer_cls = plugin_module.build_renderer_class(_textrender, qt, host)
+_renderer_cls = plugin_module.build_renderer_class(_textrender, qt, hosts)
 _buf = qt.QImage(600, 300, qt.QImage.Format.Format_ARGB32_Premultiplied)
 _buf.fill(0)
 _painter = qt.QPainter(_buf)

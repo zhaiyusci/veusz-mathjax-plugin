@@ -249,6 +249,14 @@ def esbuild_path():
 
 
 def find_package(name):
+    """A package by npm name, or by path to the folder that holds it.
+
+    A path is what lets someone bundle a font package of their own without
+    adding it to FONTS: `--font-package /somewhere/mathjax-mine-font`.
+    """
+    direct = Path(name)
+    if direct.is_dir() and (direct / 'package.json').exists():
+        return direct
     for base in PACKAGES_DIRS:
         cand = base
         for part in name.split('/'):
@@ -258,9 +266,88 @@ def find_package(name):
     return None
 
 
-def font_x_height(package):
-    """x_height/em of the font, which the bridge needs for ex -> pt."""
-    pkgdir = find_package(package)
+# font packages given by path on the command line (--font-package), filled in by
+# register_font_package(): id -> {'package': path, 'class': class name,
+# 'title': title}.  Everything else in this script reads fonts through
+# font_source()/font_title(), so a font from a path behaves like a known one.
+EXTRA_FONTS = {}
+
+
+def register_font_package(path):
+    """Take a font package from a folder and work out what it calls itself.
+
+    Nothing has to be declared: the id comes from the package name
+    (@mathjax/mathjax-<id>-font, or the folder name), the exported font class
+    from mjs/svg.js, the title from the package's own metadata if it has any.
+    """
+    pkgdir = find_package(str(path))
+    if pkgdir is None:
+        raise SystemExit('%s is not a font package (no package.json)' % path)
+    meta = {}
+    pkgjson = pkgdir / 'package.json'
+    try:
+        meta = json.loads(pkgjson.read_text(encoding='utf-8'))
+    except Exception:
+        pass
+    name = str(meta.get('name') or pkgdir.name)
+    parts = name.split('/')[-1]
+    if parts.startswith('mathjax-') and parts.endswith('-font'):
+        font_id = parts[len('mathjax-'):-len('-font')]
+    else:
+        font_id = parts
+    svg = pkgdir / 'mjs' / 'svg.js'
+    font_class = None
+    if svg.exists():
+        m = re.search(r'export\s+class\s+(\w+)',
+                      svg.read_text(encoding='utf-8', errors='replace'))
+        if m:
+            font_class = m.group(1)
+    if font_class is None:
+        raise SystemExit('%s does not export a font class from mjs/svg.js'
+                         % pkgdir)
+    EXTRA_FONTS[font_id] = {
+        'package': name,          # how the entry imports it (esbuild aliases it)
+        'path': str(pkgdir),      # where it lives
+        'class': font_class,
+        'title': str(meta.get('title') or meta.get('description') or font_id),
+    }
+    return font_id
+
+
+def font_source(font_id):
+    """(package name for the bundle's import, exported font class)."""
+    if font_id in EXTRA_FONTS:
+        extra = EXTRA_FONTS[font_id]
+        return extra['package'], extra['class']
+    return FONTS[font_id]
+
+
+def font_path(font_id):
+    """The folder a font package lives in, whether it is known or given."""
+    if font_id in EXTRA_FONTS:
+        return Path(EXTRA_FONTS[font_id]['path'])
+    pkg = font_source(font_id)
+    if isinstance(pkg, tuple):
+        pkg = pkg[0]
+    return find_package(pkg)
+
+
+def font_title(font_id):
+    if font_id in EXTRA_FONTS:
+        return EXTRA_FONTS[font_id]['title']
+    return FONT_TITLES.get(font_id, font_id)
+
+
+def font_x_height(font_id):
+    """x_height/em of the font, which the bridge needs for ex -> pt.
+
+    Takes a font id, so a package given by path -- which no search path knows
+    about -- resolves through font_path() like any other.
+    """
+    if font_id in EXTRA_FONTS:
+        pkgdir = font_path(font_id)
+    else:
+        pkgdir = find_package(font_source(font_id)[0])
     if pkgdir is None:
         return None
     common = pkgdir / 'mjs' / 'common.js'
@@ -300,8 +387,8 @@ def make_entry(font_ids, trim):
     """
     meta = []
     for font_id in font_ids:
-        pkg, font_class = FONTS[font_id]
-        pkgdir = find_package(pkg)
+        pkg, font_class = font_source(font_id)
+        pkgdir = font_path(font_id)
         if pkgdir is None:
             raise SystemExit('%s is not installed (needed for font %s)'
                              % (pkg, font_id))
@@ -310,9 +397,9 @@ def make_entry(font_ids, trim):
         keep = [r for r in ranges if r not in trim]
         meta.append({
             'id': font_id,
-            'title': FONT_TITLES.get(font_id, font_id),
+            'title': font_title(font_id),
             'package': pkg,
-            'x_height': font_x_height(pkg),
+            'x_height': font_x_height(font_id),
             'ranges': len(keep),
             'ranges_total': len(ranges),
         })
@@ -334,7 +421,7 @@ def make_entry(font_ids, trim):
         'import { RegisterHTMLHandler } from "@mathjax/src/js/handlers/html.js";',
     ]
     for font_id in font_ids:
-        pkg, font_class = FONTS[font_id]
+        pkg, font_class = font_source(font_id)
         lines.append('import { %s } from "%s/mjs/svg.js";' % (font_class, pkg))
     for klass, extpkg in FONT_EXTENSIONS:
         if find_package(extpkg) is not None:
@@ -345,7 +432,7 @@ def make_entry(font_ids, trim):
     lines.append('')
     for font_id, info in zip(font_ids, meta):
         pkg = info['package']
-        pkgdir = find_package(pkg)
+        pkgdir = font_path(font_id)
         keep = sorted(
             f.stem for f in (pkgdir / 'mjs' / 'svg' / 'dynamic').glob('*.js')
             if f.stem not in trim)
@@ -362,7 +449,7 @@ def make_entry(font_ids, trim):
         'const texInput = new TeX({ packages: %s });'
         % ('["' + '", "'.join(TEX_PACKAGES) + '"]'),
         'const FONT_CLASSES = { %s };' % ', '.join(
-            '%s: %s' % (fid, FONTS[fid][1]) for fid in font_ids),
+            '%s: %s' % (fid, font_source(fid)[1]) for fid in font_ids),
         'const docs = {};',
         'let current = %r;' % font_ids[0],
         '',
@@ -450,9 +537,11 @@ def run_esbuild(source, outfile, font_ids=()):
     # resolves from, so point esbuild straight at it
     local_aliases = []
     for font_id in font_ids:
-        pkg = FONTS[font_id][0]
-        found = find_package(pkg)
-        if found is not None and PROJECT / 'local-fonts' in found.parents:
+        pkg = font_source(font_id)[0]
+        found = font_path(font_id)
+        if found is None:
+            continue
+        if font_id in EXTRA_FONTS or PROJECT / 'local-fonts' in found.parents:
             local_aliases.append('--alias:%s=%s' % (pkg, found))
     # esbuild runs in WORK, so a relative --out would land under WORK: resolve
     # it here instead (this bit us: the build wrote to build/bundle/data/ and
@@ -492,16 +581,31 @@ BANNER = '''/*!
 '''
 
 
-def prepend_banner(bundle, font_ids):
-    """Write this file's own provenance into the file.
+def prepend_banner(bundle, font_ids, meta=None, default=None):
+    """Write this file's own provenance, and what it carries, into the file.
 
     esbuild keeps only the comments it recognises as legal comments, and the
     MathJax sources carry none of them (measured: one survives, mhchemParser's),
     so without this the bundle would name no copyright holder at all.
+
+    The MATHJAX-FONT line is what makes a bundle self-describing: the plugin
+    scans data/ for *.js, reads the first few KB of each and knows which fonts
+    are inside without running it.  Drop a bundle in, restart, and it is in the
+    font chooser -- no list anywhere has to be kept in step with it.
     """
     text = bundle.read_text(encoding='utf-8')
-    names = ', '.join(FONT_TITLES.get(f, f) for f in font_ids)
-    bundle.write_text(BANNER % {'fonts': names} + text, encoding='utf-8')
+    names = ', '.join(font_title(f) for f in font_ids)
+    header = BANNER % {'fonts': names}
+    if meta:
+        header += ('// MATHJAX-FONT %s\n'
+                   % json.dumps({
+                       'mathjax': MATHJAX_VERSION,
+                       'default': default or (meta[0]['id'] if meta else None),
+                       'fonts': [{'id': m['id'], 'title': m['title'],
+                                  'x_height': m['x_height'],
+                                  'ranges': m['ranges']} for m in meta],
+                   }, sort_keys=True))
+    bundle.write_text(header + text, encoding='utf-8')
 
 
 def write_fonts_json(path, meta, default):
@@ -667,6 +771,13 @@ def main():
     ap.add_argument('--fonts', default=None,
                     help='comma-separated font ids for a multi-font bundle; '
                          'the first one is the default')
+    ap.add_argument('--font-package', action='append', default=None,
+                    metavar='DIR', dest='font_package',
+                    help='a font package by folder, for a font this script does '
+                         'not know: its id, title and class are read from the '
+                         'package itself (repeatable).  This is how a font '
+                         'someone converted for themselves is bundled without '
+                         'being added to any list.')
     ap.add_argument('--all-fonts', action='store_true',
                     help='every MathJax font: %s' % ', '.join(ALL_FONTS))
     ap.add_argument('--list-fonts', action='store_true',
@@ -695,13 +806,23 @@ def main():
         font_ids = [args.font]
     elif args.all_fonts:
         font_ids = list(ALL_FONTS)
+    elif args.font_package:
+        # a bundle for exactly the packages given, and nothing else: this is the
+        # drop-in case, where someone has one font of their own
+        font_ids = []
     else:
         font_ids = ['newcm']
-    unknown = [f for f in font_ids if f not in FONTS]
+    for path in (args.font_package or []):
+        extra_id = register_font_package(path)
+        print('[bundle] font package %s -> id %r (%s)'
+              % (path, extra_id, font_title(extra_id)))
+        if extra_id not in font_ids:
+            font_ids.append(extra_id)
+    unknown = [f for f in font_ids if f not in FONTS and f not in EXTRA_FONTS]
     if unknown:
         raise SystemExit('unknown font(s): %s\nknown: %s'
-                         % (', '.join(unknown), ', '.join(sorted(FONTS))))
-
+                         % (', '.join(unknown),
+                            ', '.join(sorted(set(FONTS) | set(EXTRA_FONTS)))))
     env_packages = os.environ.get('MATHJAX_NODE_MODULES')
     given = []
     for value in (args.packages or ([env_packages] if env_packages else [])):
@@ -725,15 +846,15 @@ def main():
         print('%-8s %-22s %-12s %s' % ('id', 'title', 'x_height', 'installed'))
         for fid in sorted(FONTS, key=lambda f: ALL_FONTS.index(f)
                           if f in ALL_FONTS else 99):
-            pkg = FONTS[fid][0]
-            xh = font_x_height(pkg)
+            pkg = font_source(fid)[0]
+            xh = font_x_height(fid)
             print('%-8s %-22s %-12s %s'
-                  % (fid, FONT_TITLES.get(fid, fid),
+                  % (fid, font_title(fid),
                      ('%.3f' % xh) if xh else '-',
                      'yes' if find_package(pkg) else 'no'))
         return 0
     if not given:
-        ensure_dependencies([FONTS[f][0] for f in font_ids],
+        ensure_dependencies([font_source(f)[0] for f in font_ids],
                             force=args.reinstall)
     elif find_package('@mathjax/src') is None:
         raise SystemExit('@mathjax/src not found under %s'
@@ -744,7 +865,7 @@ def main():
 
     source, meta = make_entry(font_ids, TRIM if args.trim else set())
     bundle = run_esbuild(source, out, font_ids)
-    prepend_banner(bundle, font_ids)
+    prepend_banner(bundle, font_ids, meta, font_ids[0])
     print('[bundle] built %s  %.2f MiB  (%d font%s: %s)'
           % (bundle, bundle.stat().st_size / 1048576, len(font_ids),
              '' if len(font_ids) == 1 else 's', ', '.join(font_ids)))

@@ -162,6 +162,27 @@ you have depends on the package: Computer Modern (TeX) alone in the small one,
 eleven in the `allfonts` one. The glyph ranges shipped are the font's own full
 set — 40 of 40 for New Computer Modern, for instance.
 
+### Adding a math font of your own
+
+A font the plugin has never heard of is added by dropping **one file** into its
+`data/` directory and restarting Veusz; nothing anywhere lists it, and there is
+no second file to keep in step. Not a font MathJax ships? Convert it first
+(`tools/build_mathjax_font.py` — see `local-fonts/README.md`), then bundle it
+with the engine:
+
+```
+python tools/build_bundle.py --font-package <your font package folder> \
+    --out data/mathjax-mine.js
+```
+
+That bundle carries a one-line `// MATHJAX-FONT {…}` header naming its id, title
+and x-height, which the plugin reads from the first few KB of the file — without
+loading it — so the font is in the chooser as soon as Veusz restarts. Each
+bundle is a whole MathJax, so a font nobody selects costs nothing: no host is
+created for it until it is drawn with. This is also how the converted **Lete
+Sans Math** is offered in this repository without being part of either released
+package.
+
 The formula is placed using the baseline MathJax reports, so TeX labels line up
 with each other and with plain text, and it is drawn as paths, so vector exports
 stay vector. The one exception is a character the chosen math font does not
