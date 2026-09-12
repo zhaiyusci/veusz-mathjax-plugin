@@ -24,6 +24,8 @@ Environment:
 
 import argparse
 import importlib.util
+import json
+import re
 import os
 import shutil
 import subprocess
@@ -34,6 +36,8 @@ from pathlib import Path
 PROJECT = Path(__file__).resolve().parents[1]
 DATA = PROJECT / 'data'
 DIST = PROJECT / 'dist'
+FONTS = PROJECT / 'fonts'          # single-font bundles, published in the repository
+WORK = PROJECT / 'build'
 VERSION_FILE = PROJECT / 'VERSION'
 
 
@@ -224,7 +228,7 @@ back to the package's own font.
 
 
 def build_one_font(font_id, args, out):
-    """One self-contained bundle for a single font, for a per-font zip."""
+    """One self-contained bundle for a single font."""
     cmd = [sys.executable, str(PROJECT / 'tools' / 'build_bundle.py'),
            '--font', font_id, '--out', str(out)]
     if args.trim:
@@ -235,59 +239,81 @@ def build_one_font(font_id, args, out):
         cmd += ['--packages', packages]
     if args.esbuild:
         cmd += ['--esbuild', args.esbuild]
-    # deliberately no fonts.json: the bundle's own header is what the plugin
-    # reads, and a stray fonts.json next to twenty bundles would only mislead
-    cmd += ['--fonts-json', str(out.parent / ('.%s.fonts.json' % font_id))]
+    # deliberately no fonts.json beside it: the bundle's own header is what the
+    # plugin reads, and these files are published as they are
+    cmd += ['--fonts-json', str(WORK / 'fonts-json' / ('%s.json' % font_id))]
     return run(cmd, cwd=str(PROJECT)).returncode
 
 
-def stage_font_packages(args):
-    """A zip per font: pick only the ones you want, drop them in data/.
+def bundle_mathjax_version(path):
+    """The MathJax version a bundle was built with, from its own header."""
+    try:
+        with open(path, 'r', encoding='utf-8', errors='replace') as handle:
+            head = handle.read(16384)
+    except Exception:
+        return None
+    m = re.search(r'^// MATHJAX-FONT (\{.*\})\s*$', head, re.M)
+    if not m:
+        return None
+    try:
+        return json.loads(m.group(1)).get('mathjax')
+    except Exception:
+        return None
 
-    Each holds one bundle -- a whole MathJax with that one font -- because a
-    dropped-in bundle is what the plugin looks for.  Nothing here points at the
-    others, so they are independent downloads.
+
+def build_font_packages(args):
+    """One plain .js per font, to publish as it is.
+
+    These are what someone downloads to add a font they want: a single file that
+    goes into the plugin's data/.  A bundle only changes when the MathJax version
+    or that font's data does, so an existing one is left alone -- building them
+    is not part of every release.  --rebuild-fonts forces it.
     """
-    fonts_dir = DIST / 'fonts'
+    fonts_dir = FONTS
     fonts_dir.mkdir(parents=True, exist_ok=True)
-    versions = sorted(set(ALL_FONT_IDS))
-    wanted = [args.font] if args.font else versions
+    wanted = [args.font] if args.font else sorted(set(ALL_FONT_IDS))
+    core = BUNDLE.MATHJAX_VERSION
     made = []
     for font_id in wanted:
         bundle = fonts_dir / ('mathjax-%s.js' % font_id)
-        print('[build] font package: %s' % font_id)
+        if bundle.exists() and not args.rebuild_fonts:
+            have = bundle_mathjax_version(bundle)
+            if have == core:
+                print('[build] %-24s kept (MathJax %s)' % (bundle.name, have))
+                made.append(bundle)
+                continue
+            print('[build] %-24s rebuilt (MathJax %s, wanted %s)'
+                  % (bundle.name, have or '?', core))
+        else:
+            print('[build] %-24s building' % bundle.name)
         if build_one_font(font_id, args, bundle) != 0:
             print('[build] warning: %s did not build, skipped' % font_id)
             continue
-        out = DIST / ('veusz-mathjax-plugin-%s-font-%s.zip'
-                      % (version(), font_id))
-        root = 'veusz-mathjax-plugin'
-        with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
-            z.write(bundle, '%s/data/%s' % (root, bundle.name))
-            z.writestr('%s/HOW-TO.txt' % root, FONT_HOWTO % bundle.name)
-        made.append(out)
-        print('[build] release: %s  (%.2f MiB)'
-              % (out, out.stat().st_size / 1048576))
+        made.append(bundle)
     return made
 
 
 def main():
     ap = argparse.ArgumentParser(
-        description='Build the plugin and stage release zips.  Three kinds '
-                    'come out of the same source: basic (the engine with one '
-                    'font), allfonts (every font we know, with a chooser in '
-                    'veusz), and fonts (one zip per font, to drop into an '
-                    'installed plugin data/ as wanted).')
+        description='Build the plugin and stage release zips.  Two kinds come '
+                    'out of the same source: basic (the engine with one '
+                    'font) and allfonts (every font we know, with a chooser '
+                    'in veusz).  --flavor fonts writes the single-font '
+                    'bundles into fonts/ instead: those are published in the '
+                    'repository, not as release files.')
     ap.add_argument('--flavor', choices=('basic', 'allfonts', 'fonts'),
                     default='basic',
                     help='basic: one font (--font, default tex); '
                          'allfonts: every font we know; '
-                         'fonts: a zip per font, to drop into data/ as wanted')
+                         'fonts: the single-font bundles in fonts/')
     ap.add_argument('--font', default=None,
                     help='the font of a basic build (default tex: the smallest), '
                          'or one font of a --flavor fonts build '
                          '(default: every font we know)')
     ap.add_argument('--trim', action='store_true')
+    ap.add_argument('--rebuild-fonts', action='store_true',
+                    help='rebuild the font bundles in fonts/ even when they '
+                         'were built with the same MathJax version')
     ap.add_argument('--skip-quickjs', action='store_true')
     ap.add_argument('--skip-bridge', action='store_true')
     ap.add_argument('--skip-bundle', action='store_true')
@@ -314,8 +340,8 @@ def main():
     if args.flavor == 'fonts':
         # per-font packages need neither the engine nor the bridge: each is a
         # bundle to drop into an installed plugin's data/
-        made = stage_font_packages(args)
-        print('[build] %d font package(s) staged in %s' % (len(made), DIST))
+        made = build_font_packages(args)
+        print('[build] %d font bundle(s) in %s' % (len(made), FONTS))
         return 0 if made else 1
 
     qjs_src, qjs_build = quickjs_dirs()

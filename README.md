@@ -58,19 +58,21 @@ If the text around your formulas is not Computer Modern — a Times-like figure,
 sans-serif poster, whatever the journal asks for — this is how you stop the math
 from clashing with it. Cost: about 0.9 s to start, +72 MB of memory.
 
-**`veusz-mathjax-plugin-<version>-font-<name>.zip` — about 1 MB each.**
-One font on its own, for a plugin you already have: unzip it next to the plugin
-folder and restart Veusz, and that font joins the chooser — no second file to
-keep in step, nothing to configure. Useful when the one font you want is not in
-the package you downloaded (the `text` one, say, or a figure that has to match a
-specific journal face). Take any number of them; they do not interfere with each
-other or with the fonts you already have. See *Adding another font*.
+**`fonts/mathjax-<name>.js` — in this repository, 2.6 to 11 MB each.**
+One font on its own, for a plugin you already have: download the file, put it in
+the plugin's `data/` folder and restart Veusz, and that font joins the chooser —
+no second file to keep in step, nothing to configure. Useful when the one font
+you want is not in the package you downloaded (the `text` one, say, or a figure
+that has to match a specific journal face). They live in the repository rather
+than in a release, so the link to one never changes; `fonts/README.md` lists
+them. Take any number; they do not interfere with each other or with the fonts
+you already have. See *Adding another font*.
 
 | | fonts | download | loads in | memory |
 |---|---|---|---|---|
 | `…-<version>.zip` | 1 — Computer Modern (TeX) | 1.8 MB | 0.13 s | +14 MB |
 | `…-<version>-allfonts.zip` | 12 | 11.2 MB | 0.9 s | +72 MB |
-| `…-<version>-font-<name>.zip` | 1, added to whatever you have | ~1 MB | — | — |
+| `fonts/mathjax-<name>.js` | 1, added to whatever you have | 2.6–11 MB | — | — |
 
 Those costs are measured, and they are only paid once a label actually asks for
 MathJax; a plot with no TeX text never loads the engine at all. An added font is
@@ -176,8 +178,10 @@ set — 40 of 40 for New Computer Modern, for instance.
 
 ### Adding another font
 
-Download the font's own package (`veusz-mathjax-plugin-<version>-font-<name>.zip`),
-unzip it next to the folder that holds `veusz_mathjax.py`, and restart Veusz:
+Download the font's file from the `fonts/` folder of this repository
+(`fonts/mathjax-termes.js`, say — right-click *Raw* and choose "Save link as…",
+or a browser will show you the JavaScript), put it in the `data/` folder of your
+plugin, and restart Veusz:
 
 ```
 veusz-mathjax-plugin/
@@ -237,7 +241,9 @@ veusz-mathjax-plugin/
 ```
 
 The source repository additionally has `src/` (the bridge), `tools/` (the build
-scripts), `test/` and `VERSION`.
+scripts), `test/`, `VERSION`, and `fonts/` — the single-font bundles people
+download to add a font to a package they already have — and `local-fonts/`, the
+fonts converted from OpenType for this project.
 
 The data files are found through `VEUSZ_JSENGINES_BRIDGE` /
 `VEUSZ_JSENGINES_BUNDLE` / `VEUSZ_JSENGINES_QUICKJS` (and `VEUSZ_JSENGINES_FONTS`
@@ -281,7 +287,7 @@ src/build-quickjs-windows.cmd          # builds and installs data/qjs.dll
 # 2. build everything and stage a release zip in dist/
 python tools/build_all.py                 # basic: one font (--font, default tex)
 python tools/build_all.py --flavor allfonts   # every font we know, ~11 MB zip
-python tools/build_all.py --flavor fonts      # one zip per font
+python tools/build_all.py --flavor fonts      # one file per font, into fonts/
                                           # add --trim to drop rare scripts
                                           #     --skip-quickjs / --skip-bridge
                                           #     to rebuild only part of it
@@ -289,10 +295,15 @@ python tools/build_all.py --flavor fonts      # one zip per font
 
 `--flavor allfonts` builds one bundle holding every font (New Computer Modern,
 Computer Modern (TeX), STIX Two, Modern, Fira, Pagella, Schola, Termes, Bonum,
-DejaVu, Asana) — 32 MB of JavaScript in one file, 0.91 s to load, +72 MB of
-memory once MathJax is used. The basic build is one font and costs 0.13 s and
-+14 MB. Both expose the same `setFont()` to the plugin, so the plugin file does
-not depend on which flavour it is given.
+DejaVu, Asana, Lete Sans Math) — 32 MB of JavaScript in one file, 0.9 s to load,
++72 MB of memory once MathJax is used. The basic build is one font and costs
+0.13 s and +14 MB. Both expose the same `setFont()` to the plugin, so the plugin
+file does not depend on which flavour it is given.
+
+`--flavor fonts` writes those same fonts one file each into `fonts/`, for people
+to download from the repository rather than from a release. It is not part of
+every release build: an existing file is kept as long as the MathJax version it
+embeds is the current one, and `--rebuild-fonts` forces it.
 
 Just the bundle, for a quick experiment:
 
