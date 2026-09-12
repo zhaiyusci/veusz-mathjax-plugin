@@ -228,20 +228,16 @@ back to the package's own font.
 
 
 def build_one_font(font_id, args, out):
-    """One self-contained bundle for a single font."""
+    """One font's data, as a file to drop into data/.
+
+    It carries no MathJax: the plugin's own bundle is the core, and this
+    registers itself into it (see tools/build_bundle.py --font-data).  That is
+    the whole point -- one core for every font, instead of a copy in each.
+    """
     cmd = [sys.executable, str(PROJECT / 'tools' / 'build_bundle.py'),
-           '--font', font_id, '--out', str(out)]
-    if args.trim:
-        cmd.append('--trim')
-    if args.no_verify:
-        cmd.append('--no-verify')
+           '--font-data', '--font', font_id, '--out', str(out)]
     for packages in (args.packages or []):
         cmd += ['--packages', packages]
-    if args.esbuild:
-        cmd += ['--esbuild', args.esbuild]
-    # deliberately no fonts.json beside it: the bundle's own header is what the
-    # plugin reads, and these files are published as they are
-    cmd += ['--fonts-json', str(WORK / 'fonts-json' / ('%s.json' % font_id))]
     return run(cmd, cwd=str(PROJECT)).returncode
 
 

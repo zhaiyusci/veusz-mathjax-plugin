@@ -171,14 +171,16 @@ def _load_quickjs(bridge):
 
 
 def _declared_fonts(bundle, sidecar=True):
-    """What a single bundle file says it carries: (fonts, default) or None.
+    """What a single file says it carries: (fonts, default, kind) or None.
 
-    A bundle is self-describing: tools/build_bundle.py writes a one-line
-    ``// MATHJAX-FONT {...}`` header into it, and this reads that header without
-    running the file -- so a bundle that was dropped into data/ can be offered
-    in the chooser without being loaded first.  The older form, a fonts.json
-    written beside the bundle, is still read for bundles built before the header
-    existed.
+    Every file the build writes describes itself in a one-line
+    ``// MATHJAX-FONT {...}`` header, which this reads without running it -- so a
+    file dropped into data/ can be offered in the chooser before anything is
+    loaded.  ``kind`` says what it is: ``bundle`` holds MathJax and its fonts,
+    ``data`` holds one font's data and nothing else, to be registered into the
+    bundle the plugin already runs (that is what keeps one core for every font).
+    The older form, a fonts.json written beside the bundle, is still read for
+    bundles built before this header existed; it means a bundle.
     """
     try:
         with open(bundle, 'r', encoding='utf-8', errors='replace') as handle:
@@ -194,7 +196,7 @@ def _declared_fonts(bundle, sidecar=True):
         if data:
             fonts = [f for f in data.get('fonts', []) if f.get('id')]
             if fonts:
-                return fonts, data.get('default')
+                return fonts, data.get('default'), data.get('kind') or 'bundle'
     if sidecar:
         path = Path(bundle).parent / 'fonts.json'
         if path.exists():
@@ -204,23 +206,23 @@ def _declared_fonts(bundle, sidecar=True):
                 return None
             fonts = [f for f in data.get('fonts', []) if f.get('id')]
             if fonts:
-                return fonts, data.get('default')
+                return fonts, data.get('default'), 'bundle'
     return None
 
 
 def _load_fonts(bundle):
-    """Which fonts this bundle carries: (list of dicts, default id)."""
+    """Which fonts this file carries: (list of dicts, default id)."""
     env = os.environ.get('VEUSZ_JSENGINES_FONTS')
     found = _declared_fonts(bundle, sidecar=True) if not env else None
     if env and Path(env).exists():
         try:
             data = json.loads(Path(env).read_text(encoding='utf-8'))
             fonts = [f for f in data.get('fonts', []) if f.get('id')]
-            found = (fonts, data.get('default')) if fonts else None
+            found = ((fonts, data.get('default'), 'bundle') if fonts else None)
         except Exception:
             found = None
     if found:
-        fonts, default = found
+        fonts, default = found[0], found[1]
         if default not in [f['id'] for f in fonts]:
             default = fonts[0]['id']
         return fonts, default
@@ -256,8 +258,9 @@ def _discover_fonts(here, bundle):
         if declared is None:
             if not is_default:
                 continue
-            declared = ([{'id': '', 'title': 'default', 'x_height': None}], '')
-        bundle_fonts, bundle_default = declared
+            declared = ([{'id': '', 'title': 'default', 'x_height': None}],
+                        '', 'bundle')
+        bundle_fonts, bundle_default, bundle_kind = declared
         for font in bundle_fonts:
             font_id = font.get('id') or ''
             if font_id in seen:
@@ -265,12 +268,13 @@ def _discover_fonts(here, bundle):
             seen.add(font_id)
             entry = dict(font)
             entry['bundle'] = str(path)
+            entry['kind'] = bundle_kind
             fonts.append(entry)
             if is_default and font_id == (bundle_default or bundle_fonts[0]['id']):
                 default_id = font_id
     if not fonts:
         return [{'id': '', 'title': 'default', 'x_height': None,
-                 'bundle': str(bundle)}], ''
+                 'bundle': str(bundle), 'kind': 'bundle'}], ''
     if default_id not in [f['id'] for f in fonts]:
         default_id = fonts[0]['id']
     return fonts, default_id
@@ -285,15 +289,27 @@ class _HostSet(object):
     font id, which is what JsHost.render() already takes.
     """
 
-    def __init__(self, bridge, fonts, default_font):
+    def __init__(self, bridge, fonts, default_font, core_bundle=None):
         self.bridge = bridge
         self.fonts = fonts
         self.default_font = default_font
+        self.core_bundle = core_bundle
         self._by_id = dict((f['id'], f) for f in fonts)
         self._hosts = {}
+        self._registered = set()
 
     def spec(self, font_id):
         return self._by_id.get(font_id) or self._by_id.get(self.default_font)
+
+    def core_host(self):
+        """The host holding MathJax itself, which font data files register into."""
+        if self.core_bundle is None:
+            return None
+        host = self._hosts.get(self.core_bundle)
+        if host is None:
+            host = JsHost(self.bridge, self.core_bundle)
+            self._hosts[self.core_bundle] = host
+        return host
 
     def host_for(self, font_id):
         """The host that can draw this font id (falls back to the default)."""
@@ -301,10 +317,22 @@ class _HostSet(object):
         if spec is None:
             return None
         path = spec.get('bundle')
+        if (spec.get('kind') or 'bundle') == 'data':
+            # a font data file: no MathJax in it, it goes into the core host
+            # once, and every font that arrives this way shares that host
+            host = self.core_host()
+            if host is None:
+                return None
+            if path not in self._registered:
+                host.load_font(path)
+                self._registered.add(path)
+            host.remember_font(spec.get('id'), spec.get('x_height'))
+            return host
         host = self._hosts.get(path)
         if host is None:
             host = JsHost(self.bridge, path)
             self._hosts[path] = host
+        host.remember_font(spec.get('id'), spec.get('x_height'))
         return host
 
 
@@ -348,6 +376,13 @@ class JsHost:
             ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_float),
             ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_void_p)]
         lib.js_host_render.restype = ctypes.c_int
+        # js_host_eval runs one more script in this runtime, which is how a font
+        # data file adds its font to the MathJax already loaded here.  A bridge
+        # older than that has no such symbol; load_font() says so if it is asked.
+        if hasattr(lib, 'js_host_eval'):
+            lib.js_host_eval.argtypes = [ctypes.c_int, ctypes.c_char_p,
+                                         ctypes.POINTER(ctypes.c_void_p)]
+            lib.js_host_eval.restype = ctypes.c_int
         lib.mathjax_set_ex_height.argtypes = [ctypes.c_float]
         lib.mathjax_set_ex_height.restype = None
         lib.mathjax_free.argtypes = [ctypes.c_void_p]
@@ -358,6 +393,30 @@ class JsHost:
                                % self.bundle)
         self.lib = lib
         self.set_font(self.default_font)
+
+    def load_font(self, path):
+        """Register a font data file's font into this host.
+
+        The file carries no MathJax: it reads the base classes this bundle
+        publishes (globalThis.__veuszMathjax) and calls registerFont(), so one
+        host -- one MathJax -- ends up holding every font added this way.
+        """
+        if not hasattr(self.lib, 'js_host_eval'):
+            raise RuntimeError(
+                'this build of mathjaxbridge cannot add fonts at run time; '
+                'replace it with one that has js_host_eval')
+        err = ctypes.c_void_p()
+        rc = self.lib.js_host_eval(self.handle, str(path).encode('utf-8'),
+                                   ctypes.byref(err))
+        if rc != 0:
+            message = ''
+            if err.value:
+                message = ctypes.cast(err, ctypes.c_char_p).value.decode(
+                    'utf-8', 'replace')
+                self.lib.mathjax_free(err)
+            raise RuntimeError('cannot load the font %s: %s'
+                               % (Path(path).name, message or 'rc=%d' % rc))
+        return True
 
     def _call(self, fn_name, arg, size=0.0, display=0, color=None):
         """Call a function the bundle defines; returns (text, (w, h, baseline))."""
@@ -387,6 +446,18 @@ class JsHost:
             if out.value:
                 self.lib.mathjax_free(out)
         return data, (w.value, h.value, b.value)
+
+    def remember_font(self, font_id, x_height=None):
+        """Let this host render a font it did not declare itself.
+
+        A font data file registers its font into the core at run time, so the
+        core bundle's own list of fonts does not mention it.  Without this the
+        plugin took the id for unknown and rendered with the default font
+        instead -- a registered font drew the core's glyphs, silently.
+        """
+        if not font_id:
+            return
+        self._x_height[font_id] = x_height
 
     def set_font(self, font):
         """Switch the bundle to another font, and tell the bridge its x-height.
@@ -929,7 +1000,7 @@ def install(verbose=True):
             % ('bridge library' if bridge is None else 'mathjax_bundle.js'))
 
     fonts, default_font = _discover_fonts(here, bundle)
-    hosts = _HostSet(bridge, fonts, default_font)
+    hosts = _HostSet(bridge, fonts, default_font, core_bundle=bundle)
 
     import veusz.qtall as qt
     from veusz.setting import controls

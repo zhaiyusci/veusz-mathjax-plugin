@@ -58,10 +58,12 @@ If the text around your formulas is not Computer Modern — a Times-like figure,
 sans-serif poster, whatever the journal asks for — this is how you stop the math
 from clashing with it. Cost: about 0.9 s to start, +72 MB of memory.
 
-**`fonts/mathjax-<name>.js` — in this repository, 2.6 to 11 MB each.**
+**`fonts/mathjax-<name>.js` — in this repository, 1.1 to 10.9 MB each.**
 One font on its own, for a plugin you already have: download the file, put it in
 the plugin's `data/` folder and restart Veusz, and that font joins the chooser —
-no second file to keep in step, nothing to configure. Useful when the one font
+no second file to keep in step, nothing to configure.  The file carries no
+MathJax: it registers into the copy the plugin already loaded, so every font
+added this way shares one core. Useful when the one font
 you want is not in the package you downloaded (the `text` one, say, or a figure
 that has to match a specific journal face). They live in the repository rather
 than in a release, so the link to one never changes; `fonts/README.md` lists
@@ -72,7 +74,7 @@ you already have. See *Adding another font*.
 |---|---|---|---|---|
 | `…-<version>.zip` | 1 — Computer Modern (TeX) | 1.8 MB | 0.13 s | +14 MB |
 | `…-<version>-allfonts.zip` | 12 | 11.2 MB | 0.9 s | +72 MB |
-| `fonts/mathjax-<name>.js` | 1, added to whatever you have | 2.6–11 MB | — | — |
+| `fonts/mathjax-<name>.js` | 1, added to whatever you have | 1.1–10.9 MB | — | — |
 
 Those costs are measured, and they are only paid once a label actually asks for
 MathJax; a plot with no TeX text never loads the engine at all. An added font is

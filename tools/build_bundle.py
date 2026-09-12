@@ -365,13 +365,16 @@ def font_x_height(font_id):
         return None
 
 
-def _strip_module(text):
+def _strip_module(text, needed=None):
     """Turn one ES module of a font package into a plain piece of a script.
 
-    Imports of MathJax itself become reads from the running core
-    (globalThis.__veuszMathjax); imports of the package's own files disappear,
-    because those files are concatenated into the same scope; and `export` goes
-    away, since nothing imports this script.
+    Imports of MathJax itself are collected into ``needed``; they all read the
+    running core (globalThis.__veuszMathjax), and the caller declares them once
+    for the whole file -- declaring them per module collided, since common.js and
+    svg.js import the same names ("invalid redefinition of lexical identifier").
+    Imports of the package's own files disappear, because those files are
+    concatenated into the same scope, and `export` goes away, since nothing
+    imports this script.
     """
     out = []
     for line in text.splitlines():
@@ -379,10 +382,10 @@ def _strip_module(text):
             continue
         m = re.match(r"^import\s*\{([^}]*)\}\s*from\s*'([^']+)';?\s*$", line)
         if m:
-            names = ', '.join(n.strip() for n in m.group(1).split(','))
+            names = [n.strip() for n in m.group(1).split(',') if n.strip()]
             source = m.group(2)
-            if source.startswith('@mathjax/'):
-                out.append('const { %s } = __veuszMathjax;' % names)
+            if source.startswith('@mathjax/') and needed is not None:
+                needed.update(names)
             # a relative import: that module is already in this file
             continue
         m = re.match(r"^import\s*'([^']+)';?\s*$", line)
@@ -406,13 +409,28 @@ def write_font_data(font_id, out):
         raise SystemExit('no package folder for font %s' % font_id)
     _, font_class = font_source(font_id)
     mjs = pkgdir / 'mjs'
-    pieces = [_strip_module((mjs / 'common.js').read_text(encoding='utf-8'))]
+    needed = set()
+    pieces = [_strip_module((mjs / 'common.js').read_text(encoding='utf-8'),
+                            needed)]
+    # the glyph tables of each variant, then the delimiters, then the font class
+    # itself -- the class has to be defined before anything calls it
     for table in sorted((mjs / 'svg').glob('*.js')):
-        pieces.append(_strip_module(table.read_text(encoding='utf-8')))
+        if table.name == 'default.js':
+            continue        # it names the font class, so it comes after svg.js
+        pieces.append(_strip_module(table.read_text(encoding='utf-8'), needed))
+    pieces.append(_strip_module((mjs / 'svg.js').read_text(encoding='utf-8'),
+                                needed))
+    late = mjs / 'svg' / 'default.js'
+    if late.exists():
+        pieces.append(_strip_module(late.read_text(encoding='utf-8'), needed))
+    # ... and only then the dynamic ranges, whose files call
+    # FontClass.dynamicSetup() and so need that class to exist
     dynamic = sorted((mjs / 'svg' / 'dynamic').glob('*.js'))
     for table in dynamic:
-        pieces.append(_strip_module(table.read_text(encoding='utf-8')))
-    pieces.append(_strip_module((mjs / 'svg.js').read_text(encoding='utf-8')))
+        pieces.append(_strip_module(table.read_text(encoding='utf-8'), needed))
+    # everything the modules wanted from MathJax, declared once
+    prelude = ('  const { %s } = __veuszMathjax;' % ', '.join(sorted(needed))
+               if needed else '')
     title = font_title(font_id)
     x_height = font_x_height(font_id)
     body = '\n'.join(pieces)
@@ -435,6 +453,7 @@ def write_font_data(font_id, out):
         '    throw new Error("this font needs the MathJax bundle from the plugin "\n'
         '                    + "(data/mathjax_bundle.js); it is not there");\n'
         '  }\n'
+        '%(prelude)s\n'
         '%(body)s\n'
         '  __veuszMathjax.registerFont({ id: %(id_json)s, title: %(title_json)s,\n'
         '                               xHeight: %(xheight)s,\n'
@@ -444,6 +463,7 @@ def write_font_data(font_id, out):
         'id': font_id,
         'title': title,
         'body': body,
+        'prelude': prelude,
         'id_json': json.dumps(font_id),
         'title_json': json.dumps(title),
         'xheight': json.dumps(x_height),
@@ -933,13 +953,6 @@ def main():
                     help='path to the esbuild binary (default: from --packages)')
     args = ap.parse_args()
 
-    if args.font_data:
-        if not args.font or not args.out:
-            raise SystemExit('--font-data needs --font NAME and --out FILE')
-        path = write_font_data(args.font, Path(args.out))
-        print('[bundle] font data: %s  (%.2f MiB, MathJax not included)'
-              % (path, path.stat().st_size / 1048576))
-        return 0
     if args.fonts:
         font_ids = [f.strip() for f in args.fonts.split(',') if f.strip()]
     elif args.font:
@@ -980,6 +993,16 @@ def main():
         PACKAGES_DIRS.append(local)
     if args.esbuild:
         ESBUILD_OVERRIDE = args.esbuild
+
+    if args.font_data:
+        # after the search paths above: a font data file is read from the font's
+        # package, which may be a converted one under local-fonts/
+        if not args.font or not args.out:
+            raise SystemExit('--font-data needs --font NAME and --out FILE')
+        path = write_font_data(args.font, Path(args.out))
+        print('[bundle] font data: %s  (%.2f MiB, MathJax not included)'
+              % (path, path.stat().st_size / 1048576))
+        return 0
 
     find_tools()
     if args.list_fonts:
