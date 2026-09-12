@@ -84,13 +84,12 @@ FONT_TITLES = {
 
 # the fonts in a full build, cheapest first, default first.
 #
-# 'lete' is deliberately absent: it is converted from an OpenType font by us
+# 'lete' is the odd one out: it is converted from an OpenType font by us
 # (tools/build_mathjax_font.py, see local-fonts/README.md) rather than shipped by
-# MathJax, so whether it belongs in the published package is a separate decision.
-# It builds on request with --font lete, and adding the id here is all it takes to
-# put it in every allfonts build.
+# MathJax, and sits last because it is the largest.  A build can also take one
+# font on its own (--font lete), which is what the per-font release zips do.
 ALL_FONTS = ['newcm', 'tex', 'stix2', 'modern', 'fira', 'pagella', 'schola',
-             'termes', 'bonum', 'dejavu', 'asana']
+             'termes', 'bonum', 'dejavu', 'asana', 'lete']
 
 # glyph ranges that only matter for scripts a plot rarely needs
 TRIM = {

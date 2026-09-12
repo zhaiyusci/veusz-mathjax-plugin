@@ -23,6 +23,7 @@ Environment:
 """
 
 import argparse
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -34,6 +35,29 @@ PROJECT = Path(__file__).resolve().parents[1]
 DATA = PROJECT / 'data'
 DIST = PROJECT / 'dist'
 VERSION_FILE = PROJECT / 'VERSION'
+
+
+def _bundle_module():
+    """tools/build_bundle.py, for the list of fonts and their titles.
+
+    Imported rather than copied so there is one place that knows which fonts
+    exist -- including any converted from an OpenType font by us.
+    """
+    path = PROJECT / 'tools' / 'build_bundle.py'
+    spec = importlib.util.spec_from_file_location('build_bundle_for_list', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+BUNDLE = _bundle_module()
+# every font this project knows how to ship, and what to call it
+ALL_FONT_IDS = list(BUNDLE.ALL_FONTS) + [f for f in sorted(BUNDLE.FONTS)
+                                         if f not in BUNDLE.ALL_FONTS]
+
+
+def font_title(font_id):
+    return BUNDLE.font_title(font_id)
 
 # data/ contents, each with the licence it carries
 SHIP_DATA = (
@@ -178,16 +202,91 @@ def stage_release(flavor='basic'):
     return out
 
 
+FONT_HOWTO = """\
+One math font for the Veusz MathJax plugin.
+
+Unzip this next to the folder that holds veusz-mathjax-plugin (the one with
+veusz_mathjax.py in it) and the file lands in its data/ directory:
+
+    veusz-mathjax-plugin/
+      veusz_mathjax.py
+      data/
+        %s      <- this font
+        mathjax_bundle.js    <- the fonts that came with your package
+
+Restart Veusz and the font is in the chooser of the MathJax row, on every text
+element.  Nothing lists it: the bundle says what it carries, and the plugin
+reads that from the file itself.
+
+Delete the file again to remove the font.  Documents that asked for it then fall
+back to the package's own font.
+"""
+
+
+def build_one_font(font_id, args, out):
+    """One self-contained bundle for a single font, for a per-font zip."""
+    cmd = [sys.executable, str(PROJECT / 'tools' / 'build_bundle.py'),
+           '--font', font_id, '--out', str(out)]
+    if args.trim:
+        cmd.append('--trim')
+    if args.no_verify:
+        cmd.append('--no-verify')
+    for packages in (args.packages or []):
+        cmd += ['--packages', packages]
+    if args.esbuild:
+        cmd += ['--esbuild', args.esbuild]
+    # deliberately no fonts.json: the bundle's own header is what the plugin
+    # reads, and a stray fonts.json next to twenty bundles would only mislead
+    cmd += ['--fonts-json', str(out.parent / ('.%s.fonts.json' % font_id))]
+    return run(cmd, cwd=str(PROJECT)).returncode
+
+
+def stage_font_packages(args):
+    """A zip per font: pick only the ones you want, drop them in data/.
+
+    Each holds one bundle -- a whole MathJax with that one font -- because a
+    dropped-in bundle is what the plugin looks for.  Nothing here points at the
+    others, so they are independent downloads.
+    """
+    fonts_dir = DIST / 'fonts'
+    fonts_dir.mkdir(parents=True, exist_ok=True)
+    versions = sorted(set(ALL_FONT_IDS))
+    wanted = [args.font] if args.font else versions
+    made = []
+    for font_id in wanted:
+        bundle = fonts_dir / ('mathjax-%s.js' % font_id)
+        print('[build] font package: %s' % font_id)
+        if build_one_font(font_id, args, bundle) != 0:
+            print('[build] warning: %s did not build, skipped' % font_id)
+            continue
+        out = DIST / ('veusz-mathjax-plugin-%s-font-%s.zip'
+                      % (version(), font_id))
+        root = 'veusz-mathjax-plugin'
+        with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
+            z.write(bundle, '%s/data/%s' % (root, bundle.name))
+            z.writestr('%s/HOW-TO.txt' % root, FONT_HOWTO % bundle.name)
+        made.append(out)
+        print('[build] release: %s  (%.2f MiB)'
+              % (out, out.stat().st_size / 1048576))
+    return made
+
+
 def main():
     ap = argparse.ArgumentParser(
-        description='Build the plugin and stage a release zip.  Two flavours '
-                    'come out of the same source: basic (one font, small) and '
-                    'allfonts (every MathJax font, with a chooser in veusz).')
-    ap.add_argument('--flavor', choices=('basic', 'allfonts'), default='basic',
+        description='Build the plugin and stage release zips.  Three kinds '
+                    'come out of the same source: basic (the engine with one '
+                    'font), allfonts (every font we know, with a chooser in '
+                    'veusz), and fonts (one zip per font, to drop into an '
+                    'installed plugin data/ as wanted).')
+    ap.add_argument('--flavor', choices=('basic', 'allfonts', 'fonts'),
+                    default='basic',
                     help='basic: one font (--font, default tex); '
-                         'allfonts: every MathJax font')
-    ap.add_argument('--font', default='tex',
-                    help='the font of a basic build (default tex: smallest)')
+                         'allfonts: every font we know; '
+                         'fonts: a zip per font, to drop into data/ as wanted')
+    ap.add_argument('--font', default=None,
+                    help='the font of a basic build (default tex: the smallest), '
+                         'or one font of a --flavor fonts build '
+                         '(default: every font we know)')
     ap.add_argument('--trim', action='store_true')
     ap.add_argument('--skip-quickjs', action='store_true')
     ap.add_argument('--skip-bridge', action='store_true')
@@ -204,9 +303,20 @@ def main():
 
     print('[build] flavor: %s%s' % (
         args.flavor,
-        '' if args.flavor == 'basic' else '  (every MathJax font)'))
+        { 'basic': '',
+          'allfonts': '  (every font we know)',
+          'fonts': '  (one zip per font)',
+        }.get(args.flavor, '')))
     if args.flavor == 'basic':
+        args.font = args.font or 'tex'          # the smallest font, as before
         print('[build]   font: %s' % args.font)
+
+    if args.flavor == 'fonts':
+        # per-font packages need neither the engine nor the bridge: each is a
+        # bundle to drop into an installed plugin's data/
+        made = stage_font_packages(args)
+        print('[build] %d font package(s) staged in %s' % (len(made), DIST))
+        return 0 if made else 1
 
     qjs_src, qjs_build = quickjs_dirs()
     print('[build] QuickJS source: %s%s'

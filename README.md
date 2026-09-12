@@ -38,35 +38,47 @@ a shared library with a single cmake flag. Drop both into `data/` and it works
 
 ## Which package?
 
-Both zips install the same way and contain the same plugin; only the fonts
-inside `data/` differ. The choice is about what the formula should look like
-next to the rest of your figure.
+Three kinds come out of the same source. All of them install the same way and
+contain the same plugin; only the fonts inside `data/` differ, so the choice is
+about what the formulas should look like next to the rest of your figure.
 
 **`veusz-mathjax-plugin-<version>.zip` — 1.8 MB — "I just want proper-looking formulas."**
 One font, **Computer Modern (TeX)**: the face LaTeX has used for decades, and
 what most people expect a formula to look like. Nothing to choose, smallest
 download, and the lightest: 0.13 s to start, +14 MB of memory.
 
-**`veusz-mathjax-plugin-<version>-allfonts.zip` — 11 MB — "the math should
+**`veusz-mathjax-plugin-<version>-allfonts.zip` — 11.2 MB — "the math should
 match the rest of the figure."**
-Eleven faces, chosen per text element in the MathJax row: New Computer Modern
+Twelve faces, chosen per text element in the MathJax row: New Computer Modern
 (MathJax's own default), Computer Modern (TeX), Modern, **STIX Two** and
 **Termes** (Times-like), **Pagella** (Palatino-like), **Schola** (Charter-like),
-**Bonum** (bookman-like), and **Fira**, **DejaVu**, **Asana** (sans). If the text
-around your formulas is not Computer Modern — a Times-like figure, a sans-serif
-poster, whatever the journal asks for — this is how you stop the math from
-clashing with it. Cost: 0.91 s to start, +72 MB of memory.
+**Bonum** (bookman-like), **Fira**, **DejaVu**, **Asana** (sans), and **Lete Sans
+Math** (a sans-serif math face, converted from the OpenType font of that name).
+If the text around your formulas is not Computer Modern — a Times-like figure, a
+sans-serif poster, whatever the journal asks for — this is how you stop the math
+from clashing with it. Cost: about 0.9 s to start, +72 MB of memory.
+
+**`veusz-mathjax-plugin-<version>-font-<name>.zip` — about 1 MB each.**
+One font on its own, for a plugin you already have: unzip it next to the plugin
+folder and restart Veusz, and that font joins the chooser — no second file to
+keep in step, nothing to configure. Useful when the one font you want is not in
+the package you downloaded (the `text` one, say, or a figure that has to match a
+specific journal face). Take any number of them; they do not interfere with each
+other or with the fonts you already have. See *Adding a math font of your own*.
 
 | | fonts | download | loads in | memory |
 |---|---|---|---|---|
 | `…-<version>.zip` | 1 — Computer Modern (TeX) | 1.8 MB | 0.13 s | +14 MB |
-| `…-<version>-allfonts.zip` | 11 | 11 MB | 0.91 s | +72 MB |
+| `…-<version>-allfonts.zip` | 12 | 11.2 MB | 0.9 s | +72 MB |
+| `…-<version>-font-<name>.zip` | 1, added to whatever you have | ~1 MB | — | — |
 
 Those costs are measured, and they are only paid once a label actually asks for
-MathJax; a plot with no TeX text never loads the engine at all.
+MathJax; a plot with no TeX text never loads the engine at all. An added font is
+only loaded the first time something is drawn with it, so carrying one you do not
+use costs nothing.
 
-You can change your mind later: download the other zip and replace the plugin
-folder. Documents keep their settings, and a document that names a font the
+You can change your mind later: download another zip and replace (or add to) the
+plugin folder. Documents keep their settings, and a document that names a font the
 package does not carry falls back to that package's font. The one-font package
 still shows the chooser — it just has a single entry.
 
@@ -159,7 +171,7 @@ The fonts are MathJax's own, with their glyph ranges inlined (the embedded
 engine cannot fetch anything at render time), so Greek, Cyrillic, Hebrew,
 Devanagari and Cherokee inside a formula come out as real glyphs. Which fonts
 you have depends on the package: Computer Modern (TeX) alone in the small one,
-eleven in the `allfonts` one. The glyph ranges shipped are the font's own full
+twelve in the `allfonts` one. The glyph ranges shipped are the font's own full
 set — 40 of 40 for New Computer Modern, for instance.
 
 ### Adding a math font of your own
@@ -200,7 +212,7 @@ veusz-mathjax-plugin/
   veusz_mathjax.py       the plugin — the file you add to Veusz
   data/
     mathjax_bundle.js    MathJax 4 + the package's fonts, bundled with esbuild
-                         (~3 MB in the one-font package, ~32 MB with all eleven)
+                         (~3 MB in the one-font package, ~32 MB with all twelve)
     fonts.json           which fonts are in the bundle, and their x-heights
     mathjaxbridge.dll    the JS host, built from src/mathjax_bridge.cpp
     qjs.dll              QuickJS (quickjs-ng), imported by the bridge (~1 MB)
@@ -255,7 +267,8 @@ src/build-quickjs-windows.cmd          # builds and installs data/qjs.dll
 
 # 2. build everything and stage a release zip in dist/
 python tools/build_all.py                 # basic: one font (--font, default tex)
-python tools/build_all.py --flavor allfonts   # every MathJax font, ~11 MB zip
+python tools/build_all.py --flavor allfonts   # every font we know, ~11 MB zip
+python tools/build_all.py --flavor fonts      # one zip per font
                                           # add --trim to drop rare scripts
                                           #     --skip-quickjs / --skip-bridge
                                           #     to rebuild only part of it
@@ -416,7 +429,7 @@ copy of it, so `data/` holds three artefacts with one licence each (see
   element's own font and one em, so neither the font nor the math font moves
   them. If that font has no such character either, Qt's system fallback supplies
   it, as it always did.) Measured in Veusz 4.2.1/Qt 6.10.2, a 20pt `\text{珠子}`
-  is 39.8x19.4pt of paper under every one of the eleven math fonts, and 39.6x19.4pt
+  is 39.6x19.4pt of paper under every one of the twelve math fonts, and 39.6x19.4pt
   as a plain label. Their design and exact spacing are that font's, not the math
   font's. The plugin paints them as
   outlines rather than leaving them as text, because text does not survive
