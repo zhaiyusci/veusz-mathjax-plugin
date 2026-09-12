@@ -97,14 +97,17 @@ if errorlevel 1 ( echo [build] FAILED & exit /b 1 )
 del /q mathjax_bridge.obj mathjaxbridge.exp mathjaxbridge.lib 2>nul
 del /q "%OUTDIR%\mathjaxbridge.new.exp" "%OUTDIR%\mathjaxbridge.new.lib" 2>nul
 
-rem A running veusz keeps the DLL loaded, so build to a scratch name first and
-rem only swap it in when that succeeds.
+rem Copy the DLL into place only when that succeeds: the swap fails if anything
+rem holds the file open -- a veusz that is running, a stuck export, an antivirus
+rem scan -- so say what happened rather than guessing which of those it was.
 if exist "%OUTDIR%\mathjaxbridge.dll" copy /y "%OUTDIR%\mathjaxbridge.dll" "%OUTDIR%\mathjaxbridge.old.dll" >nul 2>&1
 copy /y "%OUTDIR%\mathjaxbridge.new.dll" "%OUTDIR%\mathjaxbridge.dll" >nul 2>&1
 if errorlevel 1 (
     echo [build] built %OUTDIR%\mathjaxbridge.new.dll
-    echo [build] but %OUTDIR%\mathjaxbridge.dll is in use ^(a running veusz has
-    echo [build] loaded it^), so it was not replaced.  Close veusz and re-run.
+    echo [build] but copying it over %OUTDIR%\mathjaxbridge.dll failed, so the
+    echo [build] old file is still in place.  Something has that file open;
+    echo [build] check for a veusz still running ^(or an export that did not
+    echo [build] exit^) and re-run.
     exit /b 2
 )
 del /q "%OUTDIR%\mathjaxbridge.old.dll" "%OUTDIR%\mathjaxbridge.new.dll" 2>nul
