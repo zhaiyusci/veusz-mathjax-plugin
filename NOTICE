@@ -21,6 +21,13 @@ mhchemParser 4.2.1 (the \ce and \pu support inside MathJax)
     Licensed under the Apache License, Version 2.0 (see LICENSE)
     https://github.com/mhchem/mhchemParser
 
+Lete Sans Math (in the allfonts package; converted here, see local-fonts/README.md)
+    Copyright (c) 2024-2026 Chenjing Bu and Daniel Flipo
+    Licensed under the SIL Open Font License 1.1
+    (see licenses/lete-sans-math-OFL-1.1.txt)
+    The font's own glyph outlines and metrics, reformatted as the data MathJax
+    reads.  Not part of the one-font package.
+
 QuickJS (quickjs-ng 0.16.2)
     Copyright (c) 2017-2026 Fabrice Bellard
     Copyright (c) 2017-2024 Charlie Gordon

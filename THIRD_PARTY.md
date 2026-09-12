@@ -11,6 +11,7 @@ a compatibility argument:
 | `data/mathjaxbridge.dll` / `.so` / `.dylib` | the JS host, built from `src/mathjax_bridge.cpp` | **Apache-2.0** (this project) |
 | `data/qjs.dll` / `libqjs.so` / `libqjs.dylib` | QuickJS, built unmodified from quickjs-ng 0.16.2 | **MIT** — text in `licenses/quickjs-ng-LICENSE.txt` |
 | `data/mathjax_bundle.js` | MathJax 4.1.3 + font packages, bundled by esbuild | **Apache-2.0** — same text as `LICENSE` |
+| Lete Sans Math, inside `data/mathjax_bundle.js` of the `allfonts` package | a math font converted from the OpenType font, see `local-fonts/README.md` | **OFL-1.1** — text in `licenses/lete-sans-math-OFL-1.1.txt` |
 | esbuild | build tool | MIT, used at build time only, not redistributed |
 
 ## Why the binaries are split
@@ -59,12 +60,34 @@ single file. For completeness:
 `tools/build_all.py` packages all of it:
 
 1. `LICENSE` — Apache-2.0 (this project).
-2. `NOTICE` — attribution for MathJax, mhchemParser and QuickJS.
+2. `NOTICE` — attribution for MathJax, mhchemParser, Lete Sans Math and QuickJS.
 3. `THIRD_PARTY.md` — this file.
 4. `licenses/quickjs-ng-LICENSE.txt` — the MIT notice for the engine.
 5. `licenses/mathjax-Apache-2.0.txt` — a copy of the Apache-2.0 text next to
    the bundle, so `data/` is self-describing if it is separated from the rest.
-6. `data/qjs.dll`, `data/mathjaxbridge.dll`, `data/mathjax_bundle.js`.
+6. `licenses/lete-sans-math-OFL-1.1.txt` — the OFL for the converted font,
+   which is in the `allfonts` bundle (and in the single-font files for that font
+   in the repository's `fonts/` directory).
+7. `data/qjs.dll`, `data/mathjaxbridge.dll`, `data/mathjax_bundle.js`.
+
+## The fonts, and the files that add them
+
+The official MathJax font packages are Apache-2.0 like MathJax itself, and are
+bundled into `data/mathjax_bundle.js` — eleven of them in the `allfonts`
+package, one (Computer Modern) in the small one.
+
+**Lete Sans Math** is not one of them: it is converted from the OpenType font of
+that name (SIL Open Font License 1.1, by Chenjing Bu and Daniel Flipo) by
+`tools/build_mathjax_font.py`, because MathJax does not ship a font tool (see
+`local-fonts/README.md`). Its licence travels with the distribution as
+`licenses/lete-sans-math-OFL-1.1.txt`. It is in the `allfonts` package only; the
+one-font package does not carry it.
+
+The repository also keeps one **font data file per font** in `fonts/`. Those are
+not release assets: each carries a single font's data and registers itself into
+the MathJax the plugin already loaded, so they share one core instead of
+repeating it. Same licences as above — Apache-2.0 for the official fonts, OFL
+for `fonts/mathjax-lete.js`.
 
 ## Credited, not redistributed
 
