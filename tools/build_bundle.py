@@ -61,6 +61,9 @@ FONTS = {
     'pagella': ('@mathjax/mathjax-pagella-font', 'MathJaxPagellaFont'),
     'schola': ('@mathjax/mathjax-schola-font', 'MathJaxScholaFont'),
     'termes': ('@mathjax/mathjax-termes-font', 'MathJaxTermesFont'),
+    # generated from an OpenType math font by tools/build_mathjax_font.py,
+    # because MathJax does not ship this one (see local-fonts/README.md)
+    'lete': ('@mathjax/mathjax-lete-font', 'MathJaxLeteFont'),
 }
 
 # what the font chooser in veusz shows
@@ -76,9 +79,16 @@ FONT_TITLES = {
     'bonum': 'Bonum',
     'dejavu': 'DejaVu',
     'asana': 'Asana',
+    'lete': 'Lete Sans Math',
 }
 
-# the fonts in a full build, cheapest first, default first
+# the fonts in a full build, cheapest first, default first.
+#
+# 'lete' is deliberately absent: it is converted from an OpenType font by us
+# (tools/build_mathjax_font.py, see local-fonts/README.md) rather than shipped by
+# MathJax, so whether it belongs in the published package is a separate decision.
+# It builds on request with --font lete, and adding the id here is all it takes to
+# put it in every allfonts build.
 ALL_FONTS = ['newcm', 'tex', 'stix2', 'modern', 'fira', 'pagella', 'schola',
              'termes', 'bonum', 'dejavu', 'asana']
 
@@ -424,7 +434,7 @@ def make_entry(font_ids, trim):
     return '\n'.join(lines) + '\n', meta
 
 
-def run_esbuild(source, outfile):
+def run_esbuild(source, outfile, font_ids=()):
     esbuild = esbuild_path()
     if not esbuild.exists():
         raise SystemExit('esbuild not found at %s (run npm install, or pass '
@@ -436,6 +446,14 @@ def run_esbuild(source, outfile):
     entry = mjx.parent.parent / 'entry.generated.js'
     entry.write_text(source, encoding='utf-8')
     alias = '@mathjax/src/mjs=%s' % (mjx / 'mjs')
+    # a font package of ours does not live in the node_modules tree esbuild
+    # resolves from, so point esbuild straight at it
+    local_aliases = []
+    for font_id in font_ids:
+        pkg = FONTS[font_id][0]
+        found = find_package(pkg)
+        if found is not None and PROJECT / 'local-fonts' in found.parents:
+            local_aliases.append('--alias:%s=%s' % (pkg, found))
     # esbuild runs in WORK, so a relative --out would land under WORK: resolve
     # it here instead (this bit us: the build wrote to build/bundle/data/ and
     # the size printed was the stale file)
@@ -445,8 +463,9 @@ def run_esbuild(source, outfile):
     cmd = ([str(esbuild)] if esbuild.suffix.lower() == '.exe'
            else [node, str(esbuild)])
     cmd += [str(entry), '--bundle', '--minify',
-            '--platform=browser', '--format=iife', '--alias:%s' % alias,
-            '--outfile=%s' % outfile]
+            '--platform=browser', '--format=iife', '--alias:%s' % alias]
+    cmd += local_aliases
+    cmd += ['--outfile=%s' % outfile]
     proc = subprocess.run(cmd, cwd=str(WORK))
     entry.unlink(missing_ok=True)
     if proc.returncode != 0:
@@ -693,6 +712,11 @@ def main():
               % ', '.join(str(p) for p in PACKAGES_DIRS))
     else:
         PACKAGES_DIRS.append(WORK / 'node_modules')
+    # fonts converted from an OpenType math font that MathJax does not ship live
+    # here, so they resolve whether or not --packages was given
+    local = PROJECT / 'local-fonts'
+    if (local / '@mathjax').is_dir() and local not in PACKAGES_DIRS:
+        PACKAGES_DIRS.append(local)
     if args.esbuild:
         ESBUILD_OVERRIDE = args.esbuild
 
@@ -719,7 +743,7 @@ def main():
     out.parent.mkdir(parents=True, exist_ok=True)
 
     source, meta = make_entry(font_ids, TRIM if args.trim else set())
-    bundle = run_esbuild(source, out)
+    bundle = run_esbuild(source, out, font_ids)
     prepend_banner(bundle, font_ids)
     print('[bundle] built %s  %.2f MiB  (%d font%s: %s)'
           % (bundle, bundle.stat().st_size / 1048576, len(font_ids),
