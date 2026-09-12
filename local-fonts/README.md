@@ -36,23 +36,26 @@ was made with the converter, e.g.
 
     python tools/build_bundle.py --font-data --font luciole --out fonts/mathjax-luciole.js
 
-### Converted, but not published (three of them)
+### Renamed because their licences require it: Sans 1, Sans 2, Sans 3
 
-They convert cleanly and are deliberately not shipped, because OFL §3 says a
-modified version may not use a *Reserved Font Name*, and that is a naming
-decision rather than a technical one:
+Three more convert cleanly, and their *names* are the problem rather than the
+fonts: KpMath Sans declares `Reserved Font Name <Kp>` and `<KpMath-Sans>`,
+ArsenalMath Sans is built on it, and New Computer Modern Sans Math is under the
+GUST licence, which like the LPPL expects a modified version to be renamed.
 
-| font | why | reserved name |
+OFL §3 restricts the primary name presented to users, and the GUST licence the
+name itself, so the conversion may not keep those names — everything else the
+licences ask for is kept: the copyright lines are in `fonts/README.md` and the
+licences in `licenses/`.  They are published as:
+
+| published as | converted from | licence |
 |---|---|---|
-| KpMath Sans (`KpMath-Sans.otf`, + `KpMath-SansBold.otf`) | OFL with an RFN | `<Kp>`, `<KpMath-Sans>` |
-| ArsenalMath Sans (`ArsenalMath-Sans.otf`, + `-SansBold.otf`) | built on KpMath, same RFN | `<Kp>` |
-| New Computer Modern Sans Math (`NewCMSansMath-Regular.otf`) | GUST licence, which expects a modified version to be renamed | — |
+| **Sans 1** (`sans1`) | `KpMath-Sans.otf` + `KpMath-SansBold.otf` | OFL-1.1, RFN `<Kp>`/`<KpMath-Sans>` |
+| **Sans 2** (`sans2`) | `ArsenalMath-Sans.otf` + `-SansBold.otf` | OFL-1.1, RFN `<Kp>` |
+| **Sans 3** (`sans3`) | `NewCMSansMath-Regular.otf` | GUST Font License |
 
-To add one, give it a name that does not contain the reserved string and run the
-two commands above with that name (the id and `--title` are what a user sees), or
-ask the copyright holder for permission to keep the original name.  KpMath's
-copyright line is Christophe Caignaert and Daniel Flipo, NewCM's is the New
-Computer Modern authors.
+To reproduce one, run the two commands above with that name (the id and
+`--title` are what a user sees).
 
 **Arev** cannot be converted at all: TeX Live ships it as Type 1 only
 (`ArevSans-Roman.pfb`), with the mathematics assembled by LaTeX from several

@@ -68,7 +68,10 @@ single file. For completeness:
 6. `licenses/lete-sans-math-OFL-1.1.txt` — the OFL for the converted font,
    which is in the `allfonts` bundle (and in the single-font files for that font
    in the repository's `fonts/` directory).
-7. `data/qjs.dll`, `data/mathjaxbridge.dll`, `data/mathjax_bundle.js`.
+7. `licenses/OFL-1.1.txt` and `licenses/newcm-sans-math-GUST.txt` — the licences
+   for the other converted fonts, which are published as files in `fonts/` rather
+   than in a release.
+8. `data/qjs.dll`, `data/mathjaxbridge.dll`, `data/mathjax_bundle.js`.
 
 ## The fonts, and the files that add them
 
@@ -87,17 +90,20 @@ The repository also keeps one **font data file per font** in `fonts/`. Those are
 not release assets: each carries a single font's data and registers itself into
 the MathJax the plugin already loaded, so they share one core instead of
 repeating it. Same licences as above — Apache-2.0 for the official MathJax fonts,
-OFL-1.1 for the ones converted here (`fonts/README.md` lists them with their
-copyright lines, and says which fonts were converted but deliberately not
-published because a modified version would have to be renamed).
+OFL-1.1 or (for one) the GUST Font License for the ones converted here.
+`fonts/README.md` lists them with their copyright lines and explains why three of
+them are called Sans 1, Sans 2 and Sans 3.
 
-The converted fonts, all OFL-1.1 with no Reserved Font Name, are: Lete Sans Math
-(c) Chenjing Bu, Daniel Flipo; Luciole Math (c) Daniel Flipo, Laurent
-Bourcellier, Jonathan Fabreguettes; Euler Math (c) American Mathematical Society,
-Khaled Hosny; Pennstander Math (c) The Grandstander Project Authors, design by Ty
-Fink; GFS Neohellenic Math (c) George D. Matthiopoulos (GFS), MATH table by
-Antonis Tsolomitis; IBM Plex Math (c) IBM Corp. The conversion is a change of
-format only — the glyph outlines and metrics are the font's own.
+The converted fonts are: Lete Sans Math (c) Chenjing Bu, Daniel Flipo; Luciole
+Math (c) Daniel Flipo, Laurent Bourcellier, Jonathan Fabreguettes; Euler Math
+(c) American Mathematical Society, Khaled Hosny; Pennstander Math (c) The
+Grandstander Project Authors, design by Ty Fink; GFS Neohellenic Math (c) George
+D. Matthiopoulos (GFS), MATH table by Antonis Tsolomitis; IBM Plex Math (c) IBM
+Corp.; and, renamed because their own licences require a modified version to be
+renamed, Sans 1 = KpMath Sans (c) Christophe Caignaert, Daniel Flipo, Sans 2 =
+ArsenalMath Sans (built on it), Sans 3 = New Computer Modern Sans Math (Copyleft)
+Antonis Tsolomitis. The conversion is a change of format only — the glyph
+outlines and metrics are the font's own.
 
 ## Credited, not redistributed
 

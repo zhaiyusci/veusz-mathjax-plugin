@@ -8,6 +8,8 @@ data/*.old.dll
 data/*.new.dll
 data/mathjax_bundle.js
 data/fonts.json
+# font data files dropped in for a local trial: published copies live in fonts/
+data/*.js
 
 __pycache__/
 *.pyc

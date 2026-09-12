@@ -73,16 +73,16 @@ FONTS = {
     'euler': ('@mathjax/mathjax-euler-font', 'MathJaxEulerFont'),
     'neohellenic': ('@mathjax/mathjax-neohellenic-font',
                     'MathJaxNeohellenicFont'),
-    # These three convert cleanly but are not published, so their packages are
-    # not in local-fonts/: OFL §3 forbids a modified version from using a
-    # Reserved Font Name, and KpMath (which ArsenalMath is built on) reserves
-    # <Kp> and <KpMath-Sans>; NewCM is under the GUST licence, which expects a
-    # modified version to be renamed.  Naming them is the copyright holder's
-    # call, or a decision to make deliberately; local-fonts/README.md has the
-    # commands to rebuild each of them under another name.
-    'kpsans': ('@mathjax/mathjax-kpsans-font', 'MathJaxKpsansFont'),
-    'arsenal': ('@mathjax/mathjax-arsenal-font', 'MathJaxArsenalFont'),
-    'newcmsans': ('@mathjax/mathjax-newcmsans-font', 'MathJaxNewcmsansFont'),
+    # Three more, published under names of their own: OFL §3 forbids a modified
+    # version from using a Reserved Font Name, and KpMath -- which ArsenalMath is
+    # built on -- reserves <Kp> and <KpMath-Sans>, while NewCM is under the GUST
+    # licence, which expects a modified version to be renamed.  So they are
+    # "Sans 1" (KpMath Sans), "Sans 2" (ArsenalMath Sans) and "Sans 3" (New
+    # Computer Modern Sans Math), with their copyright lines kept in
+    # fonts/README.md and their licences in licenses/.
+    'sans1': ('@mathjax/mathjax-sans1-font', 'MathJaxSans1Font'),
+    'sans2': ('@mathjax/mathjax-sans2-font', 'MathJaxSans2Font'),
+    'sans3': ('@mathjax/mathjax-sans3-font', 'MathJaxSans3Font'),
 }
 
 # what the font chooser in veusz shows
@@ -99,14 +99,14 @@ FONT_TITLES = {
     'dejavu': 'DejaVu',
     'asana': 'Asana',
     'lete': 'Lete Sans Math',
-    'kpsans': 'KpMath Sans',
-    'arsenal': 'ArsenalMath Sans',
     'plex': 'IBM Plex Math',
     'luciole': 'Luciole Math',
     'pennstander': 'Pennstander Math',
     'euler': 'Euler Math',
     'neohellenic': 'GFS Neohellenic Math',
-    'newcmsans': 'NewCM Sans Math (adapted)',
+    'sans1': 'Sans 1',
+    'sans2': 'Sans 2',
+    'sans3': 'Sans 3',
 }
 
 # the fonts in a full build, cheapest first, default first.
