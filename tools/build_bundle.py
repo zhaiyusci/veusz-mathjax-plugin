@@ -111,12 +111,17 @@ FONT_TITLES = {
 
 # the fonts in a full build, cheapest first, default first.
 #
-# 'lete' is the odd one out: it is converted from an OpenType font by us
-# (tools/build_mathjax_font.py, see local-fonts/README.md) rather than shipped by
-# MathJax, and sits last because it is the largest.  A build can also take one
-# font on its own (--font lete), which is what the per-font release zips do.
+# The first eleven are MathJax's own packages.  The rest are converted from
+# OpenType math fonts by tools/build_mathjax_font.py (see local-fonts/README.md):
+# Lete, and the sans-serif faces TeX Live has, which MathJax does not ship as
+# whole fonts -- its packages carry a sans-serif *variant* of every font, but not
+# a face whose digits, operators, brackets and Greek are all sans.  They share
+# one copy of MathJax inside the bundle, so each costs its own glyph data.
+# A build can also take one font on its own (--font lete).
 ALL_FONTS = ['newcm', 'tex', 'stix2', 'modern', 'fira', 'pagella', 'schola',
-             'termes', 'bonum', 'dejavu', 'asana', 'lete']
+             'termes', 'bonum', 'dejavu', 'asana',
+             'luciole', 'euler', 'sans1', 'sans2', 'pennstander',
+             'neohellenic', 'plex', 'sans3', 'lete']
 
 # glyph ranges that only matter for scripts a plot rarely needs
 TRIM = {

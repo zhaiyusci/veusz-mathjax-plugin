@@ -60,10 +60,11 @@ font above).  `lete`, `luciole`, `pennstander`, `plex`, `neohellenic`, `euler` a
 the three Sans fonts come from OpenType math fonts converted for this project;
 `fira`, `dejavu` and the rest are MathJax's own packages.
 
-The `allfonts` package in a release has twelve already, in one bundle, which is
-still the smaller download if you want most of them (11 MB against 51 MB for all
-of these). Take these when you want one or two more than your package has — and
-note that `newcm` alone is most of that 51 MB.
+The `allfonts` package in a release has every one of them already, in one bundle,
+and is a much smaller download than the files here added up (16 MB against 52 MB
+for all of them), because they share one copy of MathJax and the zip compresses
+the glyph data. Take these when you want one or two more than your package has —
+and note that `newcm` alone is a fifth of that 52 MB.
 
 ## Licences
 

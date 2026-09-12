@@ -47,18 +47,23 @@ One font, **Computer Modern (TeX)**: the face LaTeX has used for decades, and
 what most people expect a formula to look like. Nothing to choose, smallest
 download, and the lightest: 0.13 s to start, +14 MB of memory.
 
-**`veusz-mathjax-plugin-<version>-allfonts.zip` — 11.2 MB — "the math should
+**`veusz-mathjax-plugin-<version>-allfonts.zip` — 16.4 MB — "the math should
 match the rest of the figure."**
-Twelve faces, chosen per text element in the MathJax row: New Computer Modern
+Twenty faces, chosen per text element in the MathJax row: New Computer Modern
 (MathJax's own default), Computer Modern (TeX), Modern, **STIX Two** and
 **Termes** (Times-like), **Pagella** (Palatino-like), **Schola** (Charter-like),
-**Bonum** (bookman-like), **Fira**, **DejaVu**, **Asana** (sans), and **Lete Sans
-Math** (a sans-serif math face, converted from the OpenType font of that name).
+**Bonum** (bookman-like), **Fira**, **DejaVu**, **Asana** (sans), and the
+sans-serif math faces **Lete Sans Math**, **Luciole Math**, **Euler Math**,
+**Pennstander Math**, **GFS Neohellenic Math**, **IBM Plex Math** and three
+published under names of their own — **Sans 1**, **Sans 2**, **Sans 3** (KpMath
+Sans, ArsenalMath Sans and NewCM Sans Math; `fonts/README.md` says why the names
+differ).
 If the text around your formulas is not Computer Modern — a Times-like figure, a
 sans-serif poster, whatever the journal asks for — this is how you stop the math
-from clashing with it. Cost: about 0.9 s to start, +72 MB of memory.
+from clashing with it. Cost: 1.4 s to parse the bundle at startup, measured, and
+the memory that goes with 47 MB of inlined glyph data.
 
-**`fonts/mathjax-<name>.js` — in this repository, 1.1 to 10.9 MB each.**
+**`fonts/mathjax-<name>.js` — in this repository, 0.9 to 10.9 MB each.**
 One font on its own, for a plugin you already have: download the file, put it in
 the plugin's `data/` folder and restart Veusz, and that font joins the chooser —
 no second file to keep in step, nothing to configure.  The file carries no
@@ -70,11 +75,11 @@ than in a release, so the link to one never changes; `fonts/README.md` lists
 them. Take any number; they do not interfere with each other or with the fonts
 you already have. See *Adding another font*.
 
-| | fonts | download | loads in | memory |
-|---|---|---|---|---|
-| `…-<version>.zip` | 1 — Computer Modern (TeX) | 1.8 MB | 0.13 s | +14 MB |
-| `…-<version>-allfonts.zip` | 12 | 11.2 MB | 0.9 s | +72 MB |
-| `fonts/mathjax-<name>.js` | 1, added to whatever you have | 1.1–10.9 MB | — | — |
+| | fonts | download | loads in |
+|---|---|---|---|
+| `…-<version>.zip` | 1 — Computer Modern (TeX) | 1.8 MB | 0.11 s |
+| `…-<version>-allfonts.zip` | 20 | 16.4 MB | 1.4 s |
+| `fonts/mathjax-<name>.js` | 1, added to whatever you have | 0.9–10.9 MB | — |
 
 Those costs are measured, and they are only paid once a label actually asks for
 MathJax; a plot with no TeX text never loads the engine at all. An added font is
@@ -175,7 +180,7 @@ The fonts are MathJax's own, with their glyph ranges inlined (the embedded
 engine cannot fetch anything at render time), so Greek, Cyrillic, Hebrew,
 Devanagari and Cherokee inside a formula come out as real glyphs. Which fonts
 you have depends on the package: Computer Modern (TeX) alone in the small one,
-twelve in the `allfonts` one. The glyph ranges shipped are the font's own full
+twenty in the `allfonts` one. The glyph ranges shipped are the font's own full
 set — 40 of 40 for New Computer Modern, for instance.
 
 ### Adding another font
@@ -201,7 +206,7 @@ fonts your package already had — and a font nobody selects is never loaded, so
 unused one costs nothing. Delete the file again to remove the font; documents
 that asked for it then fall back to the package's font.
 
-If the font you want is not one of the twelve we ship, it can be converted from
+If the font you want is not one of the twenty we ship, it can be converted from
 an OpenType math font and bundled — `tools/build_mathjax_font.py` writes the
 MathJax data from the `.otf`, and
 
@@ -231,7 +236,7 @@ veusz-mathjax-plugin/
   veusz_mathjax.py       the plugin — the file you add to Veusz
   data/
     mathjax_bundle.js    MathJax 4 + the package's fonts, bundled with esbuild
-                         (~3 MB in the one-font package, ~32 MB with all twelve)
+                         (~3 MB in the one-font package, ~48 MB with all twenty)
     fonts.json           which fonts are in the bundle, and their x-heights
     mathjaxbridge.dll    the JS host, built from src/mathjax_bridge.cpp
     qjs.dll              QuickJS (quickjs-ng), imported by the bridge (~1 MB)
@@ -288,7 +293,7 @@ src/build-quickjs-windows.cmd          # builds and installs data/qjs.dll
 
 # 2. build everything and stage a release zip in dist/
 python tools/build_all.py                 # basic: one font (--font, default tex)
-python tools/build_all.py --flavor allfonts   # every font we know, ~11 MB zip
+python tools/build_all.py --flavor allfonts   # every font we know, ~16 MB zip
 python tools/build_all.py --flavor fonts      # one file per font, into fonts/
                                           # add --trim to drop rare scripts
                                           #     --skip-quickjs / --skip-bridge
@@ -297,9 +302,9 @@ python tools/build_all.py --flavor fonts      # one file per font, into fonts/
 
 `--flavor allfonts` builds one bundle holding every font (New Computer Modern,
 Computer Modern (TeX), STIX Two, Modern, Fira, Pagella, Schola, Termes, Bonum,
-DejaVu, Asana, Lete Sans Math) — 32 MB of JavaScript in one file, 0.9 s to load,
-+72 MB of memory once MathJax is used. The basic build is one font and costs
-0.13 s and +14 MB. Both expose the same `setFont()` to the plugin, so the plugin
+DejaVu, Asana, the sans-serif math faces, Lete Sans Math) — 48 MB of JavaScript in
+one file, 1.4 s to load, measured. The basic build is one font and loads in
+0.11 s. Both expose the same `setFont()` to the plugin, so the plugin
 file does not depend on which flavour it is given.
 
 `--flavor fonts` writes those same fonts one file each into `fonts/`, for people
@@ -440,7 +445,7 @@ copy of it, so `data/` holds three artefacts with one licence each (see
   milliseconds (then it is cached). Very large documents with hundreds of
   distinct TeX labels will feel that on the first draw.
 * What it costs: the one-font package adds 14 MB of memory once MathJax is used
-  and 0.13 s to startup; the `allfonts` package adds 72 MB and 0.91 s, because
+  and 0.11 s to startup; the `allfonts` package takes 1.4 s, because
   every font's glyph tables have to be in the engine at once. Nothing of that is
   in upstream Veusz, and none of it is paid at all until a label asks for
   MathJax.
@@ -455,7 +460,7 @@ copy of it, so `data/` holds three artefacts with one licence each (see
   element's own font and one em, so neither the font nor the math font moves
   them. If that font has no such character either, Qt's system fallback supplies
   it, as it always did.) Measured in Veusz 4.2.1/Qt 6.10.2, a 20pt `\text{珠子}`
-  is 39.6x19.4pt of paper under every one of the twelve math fonts, and 39.6x19.4pt
+  is 39.6x19.4pt of paper under every one of the twenty math fonts, and 39.6x19.4pt
   as a plain label. Their design and exact spacing are that font's, not the math
   font's. The plugin paints them as
   outlines rather than leaving them as text, because text does not survive
