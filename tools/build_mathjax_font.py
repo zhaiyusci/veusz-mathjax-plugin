@@ -152,6 +152,27 @@ def entry_js(entry):
                                      ', '.join(options))
 
 
+def font_cmap_keys(source):
+    """Every codepoint the font can draw, minus the private use area.
+
+    MathJax's own packages keep these in "dynamic ranges" and fetch them on
+    demand, so their base tables list only part of what a font has.  The tables
+    written here are flat, so the glyphs the font actually has are added to the
+    variant for the face they come from.  Without this the conversion covered
+    only the codepoints the official base tables happen to name, which left out
+    Cyrillic (which Lete has) and the accented Latin and symbol blocks that live
+    in the ranges -- those fell back to the label's font instead.
+    """
+    keys = set()
+    for cp in source.cmap:
+        if cp < 0x20 or 0x7F <= cp <= 0x9F:
+            continue
+        if 0xE000 <= cp <= 0xF8FF or 0xF0000 <= cp <= 0x10FFFD:
+            continue                    # private use: the font's working glyphs
+        keys.add(cp)
+    return keys
+
+
 def variant_keys(templates, variant):
     """The codepoints MathJax asks for in this variant.
 
@@ -398,11 +419,17 @@ def write_package(args):
     imports = []
     char_entries = []
     covered = {}
+    variant_entries = {}
+    # the variants whose tables take everything the face has, not just the
+    # codepoints MathJax's own base tables name (see font_cmap_keys)
+    extra_variants = {'normal', 'bold'}
     for variant, export in variant_const.items():
+        source = bold if (bold and variant in BOLD_VARIANTS) else regular
         keys = variant_keys(templates, variant)
+        if variant in extra_variants:
+            keys = sorted(set(keys) | font_cmap_keys(source))
         if not keys:
             continue
-        source = bold if (bold and variant in BOLD_VARIANTS) else regular
         entries = {}
         for cp in keys:
             entry = source.entry(cp)
@@ -413,6 +440,7 @@ def write_package(args):
         covered[variant] = len(entries)
         if not entries:
             continue
+        variant_entries[variant] = entries
         module = variant              # the file is named like the variant
         imports.append((export, module, variant))
         lines = ['export const %s = {' % export]
@@ -526,15 +554,11 @@ def write_package(args):
     # points all four slots at it, so pieces only need to be in the one table.
     # Pieces whose codepoints the official key sets do not mention (a font may
     # keep them in the private use area) are added to that table here.
-    normal_entries = {}
-    for variant, export in variant_const.items():
-        if variant != 'normal':
-            continue
-        keys = variant_keys(templates, variant)
-        for cp in keys:
-            entry = regular.entry(cp)
-            if entry is not None:
-                normal_entries[cp] = entry
+    # The normal table is written again below, to hold the accents and the
+    # assembly pieces -- so it must start from what the variant loop produced
+    # (everything the face has, not just the the template key list), or the
+    # extra glyphs taken from the font's cmap would be lost in this rewrite.
+    normal_entries = dict(variant_entries.get('normal', {}))
     extra_pieces = {}
     for entry in delims.values():
         for cp in entry.get('stretch', ()):
