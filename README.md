@@ -64,7 +64,7 @@ folder and restart Veusz, and that font joins the chooser — no second file to
 keep in step, nothing to configure. Useful when the one font you want is not in
 the package you downloaded (the `text` one, say, or a figure that has to match a
 specific journal face). Take any number of them; they do not interfere with each
-other or with the fonts you already have. See *Adding a math font of your own*.
+other or with the fonts you already have. See *Adding another font*.
 
 | | fonts | download | loads in | memory |
 |---|---|---|---|---|
@@ -174,26 +174,39 @@ you have depends on the package: Computer Modern (TeX) alone in the small one,
 twelve in the `allfonts` one. The glyph ranges shipped are the font's own full
 set — 40 of 40 for New Computer Modern, for instance.
 
-### Adding a math font of your own
+### Adding another font
 
-A font the plugin has never heard of is added by dropping **one file** into its
-`data/` directory and restarting Veusz; nothing anywhere lists it, and there is
-no second file to keep in step. Not a font MathJax ships? Convert it first
-(`tools/build_mathjax_font.py` — see `local-fonts/README.md`), then bundle it
-with the engine:
+Download the font's own package (`veusz-mathjax-plugin-<version>-font-<name>.zip`),
+unzip it next to the folder that holds `veusz_mathjax.py`, and restart Veusz:
 
 ```
-python tools/build_bundle.py --font-package <your font package folder> \
+veusz-mathjax-plugin/
+  veusz_mathjax.py
+  data/
+    mathjax_bundle.js     the fonts that came with your package
+    mathjax-termes.js     <- the one you just added
+```
+
+The font is in the chooser of the MathJax row from then on, on every text
+element. Nothing is configured and no list is updated: a font bundle says what it
+carries in its first line, and the plugin reads that (without loading the file).
+Take as many as you like — they do not interfere with each other, or with the
+fonts your package already had — and a font nobody selects is never loaded, so an
+unused one costs nothing. Delete the file again to remove the font; documents
+that asked for it then fall back to the package's font.
+
+If the font you want is not one of the twelve we ship, it can be converted from
+an OpenType math font and bundled — `tools/build_mathjax_font.py` writes the
+MathJax data from the `.otf`, and
+
+```
+python tools/build_bundle.py --font-package <the converted package folder> \
     --out data/mathjax-mine.js
 ```
 
-That bundle carries a one-line `// MATHJAX-FONT {…}` header naming its id, title
-and x-height, which the plugin reads from the first few KB of the file — without
-loading it — so the font is in the chooser as soon as Veusz restarts. Each
-bundle is a whole MathJax, so a font nobody selects costs nothing: no host is
-created for it until it is drawn with. This is also how the converted **Lete
-Sans Math** is offered in this repository without being part of either released
-package.
+turns that into a drop-in file like the one above. `local-fonts/README.md`
+describes what a conversion involves — and the source font's licence decides
+whether the result can be passed on.
 
 The formula is placed using the baseline MathJax reports, so TeX labels line up
 with each other and with plain text, and it is drawn as paths, so vector exports

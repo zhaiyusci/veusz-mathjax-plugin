@@ -211,8 +211,8 @@ veusz_mathjax.py in it) and the file lands in its data/ directory:
     veusz-mathjax-plugin/
       veusz_mathjax.py
       data/
-        %s      <- this font
-        mathjax_bundle.js    <- the fonts that came with your package
+        %s    <- this font
+        mathjax_bundle.js  <- the fonts that came with your package
 
 Restart Veusz and the font is in the chooser of the MathJax row, on every text
 element.  Nothing lists it: the bundle says what it carries, and the plugin
