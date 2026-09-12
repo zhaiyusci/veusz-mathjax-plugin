@@ -15,9 +15,48 @@ is).  Only the SVG output is generated -- no web fonts, no HTML/CSS data -- sinc
 that is all our plugin uses.
 
 A converted font is not part of a full build until its id is added to `ALL_FONTS`
-in `tools/build_bundle.py`; `lete` is deliberately left out of that list for now,
-so it builds on request with `--font lete` and the published `allfonts` package is
-still the eleven MathJax fonts its README describes.
+in `tools/build_bundle.py`.  The MathJax fonts in `allfonts`, plus `lete` (which
+this directory holds), are what a full build carries; the rest of the fonts
+converted for this project are published one file each in `fonts/`, which needs
+no entry in that list at all.
+
+## The other fonts converted for this project
+
+Besides Lete, seven sans-serif math fonts from TeX Live 2026 were converted the
+same way and published as files in `fonts/`: **Luciole Math**, **Euler Math**,
+**Pennstander Math**, **GFS Neohellenic Math**, **IBM Plex Math** (all OFL-1.1,
+no Reserved Font Name — see `fonts/README.md` for their copyright lines).  Each
+was made with the converter, e.g.
+
+    python tools/build_mathjax_font.py \
+        --regular <TeX Live>/fonts/opentype/public/luciole/Luciole-Math.otf \
+        --bold    <TeX Live>/fonts/opentype/public/luciole/Luciole-Math-Bold.otf \
+        --name luciole --title "Luciole Math" --license OFL-1.1 \
+        --template <each official @mathjax/mathjax-*-font> --out local-fonts/@mathjax
+
+    python tools/build_bundle.py --font-data --font luciole --out fonts/mathjax-luciole.js
+
+### Converted, but not published (three of them)
+
+They convert cleanly and are deliberately not shipped, because OFL §3 says a
+modified version may not use a *Reserved Font Name*, and that is a naming
+decision rather than a technical one:
+
+| font | why | reserved name |
+|---|---|---|
+| KpMath Sans (`KpMath-Sans.otf`, + `KpMath-SansBold.otf`) | OFL with an RFN | `<Kp>`, `<KpMath-Sans>` |
+| ArsenalMath Sans (`ArsenalMath-Sans.otf`, + `-SansBold.otf`) | built on KpMath, same RFN | `<Kp>` |
+| New Computer Modern Sans Math (`NewCMSansMath-Regular.otf`) | GUST licence, which expects a modified version to be renamed | — |
+
+To add one, give it a name that does not contain the reserved string and run the
+two commands above with that name (the id and `--title` are what a user sees), or
+ask the copyright holder for permission to keep the original name.  KpMath's
+copyright line is Christophe Caignaert and Daniel Flipo, NewCM's is the New
+Computer Modern authors.
+
+**Arev** cannot be converted at all: TeX Live ships it as Type 1 only
+(`ArevSans-Roman.pfb`), with the mathematics assembled by LaTeX from several
+fonts, so there is no OpenType file with a MATH table to read.
 
 ## mathjax-lete-font
 

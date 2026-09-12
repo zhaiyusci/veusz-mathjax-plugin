@@ -62,8 +62,27 @@ FONTS = {
     'schola': ('@mathjax/mathjax-schola-font', 'MathJaxScholaFont'),
     'termes': ('@mathjax/mathjax-termes-font', 'MathJaxTermesFont'),
     # generated from an OpenType math font by tools/build_mathjax_font.py,
-    # because MathJax does not ship this one (see local-fonts/README.md)
+    # because MathJax does not ship these (see local-fonts/README.md).  They are
+    # the sans-serif math fonts TeX Live has: MathJax's own packages carry a
+    # sans-serif *variant* of every font, but not a whole face that is sans.
     'lete': ('@mathjax/mathjax-lete-font', 'MathJaxLeteFont'),
+    'plex': ('@mathjax/mathjax-plex-font', 'MathJaxPlexFont'),
+    'luciole': ('@mathjax/mathjax-luciole-font', 'MathJaxLucioleFont'),
+    'pennstander': ('@mathjax/mathjax-pennstander-font',
+                    'MathJaxPennstanderFont'),
+    'euler': ('@mathjax/mathjax-euler-font', 'MathJaxEulerFont'),
+    'neohellenic': ('@mathjax/mathjax-neohellenic-font',
+                    'MathJaxNeohellenicFont'),
+    # These three convert cleanly but are not published, so their packages are
+    # not in local-fonts/: OFL §3 forbids a modified version from using a
+    # Reserved Font Name, and KpMath (which ArsenalMath is built on) reserves
+    # <Kp> and <KpMath-Sans>; NewCM is under the GUST licence, which expects a
+    # modified version to be renamed.  Naming them is the copyright holder's
+    # call, or a decision to make deliberately; local-fonts/README.md has the
+    # commands to rebuild each of them under another name.
+    'kpsans': ('@mathjax/mathjax-kpsans-font', 'MathJaxKpsansFont'),
+    'arsenal': ('@mathjax/mathjax-arsenal-font', 'MathJaxArsenalFont'),
+    'newcmsans': ('@mathjax/mathjax-newcmsans-font', 'MathJaxNewcmsansFont'),
 }
 
 # what the font chooser in veusz shows
@@ -80,6 +99,14 @@ FONT_TITLES = {
     'dejavu': 'DejaVu',
     'asana': 'Asana',
     'lete': 'Lete Sans Math',
+    'kpsans': 'KpMath Sans',
+    'arsenal': 'ArsenalMath Sans',
+    'plex': 'IBM Plex Math',
+    'luciole': 'Luciole Math',
+    'pennstander': 'Pennstander Math',
+    'euler': 'Euler Math',
+    'neohellenic': 'GFS Neohellenic Math',
+    'newcmsans': 'NewCM Sans Math (adapted)',
 }
 
 # the fonts in a full build, cheapest first, default first.

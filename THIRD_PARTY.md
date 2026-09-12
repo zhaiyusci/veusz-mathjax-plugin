@@ -86,8 +86,18 @@ one-font package does not carry it.
 The repository also keeps one **font data file per font** in `fonts/`. Those are
 not release assets: each carries a single font's data and registers itself into
 the MathJax the plugin already loaded, so they share one core instead of
-repeating it. Same licences as above — Apache-2.0 for the official fonts, OFL
-for `fonts/mathjax-lete.js`.
+repeating it. Same licences as above — Apache-2.0 for the official MathJax fonts,
+OFL-1.1 for the ones converted here (`fonts/README.md` lists them with their
+copyright lines, and says which fonts were converted but deliberately not
+published because a modified version would have to be renamed).
+
+The converted fonts, all OFL-1.1 with no Reserved Font Name, are: Lete Sans Math
+(c) Chenjing Bu, Daniel Flipo; Luciole Math (c) Daniel Flipo, Laurent
+Bourcellier, Jonathan Fabreguettes; Euler Math (c) American Mathematical Society,
+Khaled Hosny; Pennstander Math (c) The Grandstander Project Authors, design by Ty
+Fink; GFS Neohellenic Math (c) George D. Matthiopoulos (GFS), MATH table by
+Antonis Tsolomitis; IBM Plex Math (c) IBM Corp. The conversion is a change of
+format only — the glyph outlines and metrics are the font's own.
 
 ## Credited, not redistributed
 
