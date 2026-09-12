@@ -365,6 +365,102 @@ def font_x_height(font_id):
         return None
 
 
+def _strip_module(text):
+    """Turn one ES module of a font package into a plain piece of a script.
+
+    Imports of MathJax itself become reads from the running core
+    (globalThis.__veuszMathjax); imports of the package's own files disappear,
+    because those files are concatenated into the same scope; and `export` goes
+    away, since nothing imports this script.
+    """
+    out = []
+    for line in text.splitlines():
+        if line.startswith('//# sourceMappingURL'):
+            continue
+        m = re.match(r"^import\s*\{([^}]*)\}\s*from\s*'([^']+)';?\s*$", line)
+        if m:
+            names = ', '.join(n.strip() for n in m.group(1).split(','))
+            source = m.group(2)
+            if source.startswith('@mathjax/'):
+                out.append('const { %s } = __veuszMathjax;' % names)
+            # a relative import: that module is already in this file
+            continue
+        m = re.match(r"^import\s*'([^']+)';?\s*$", line)
+        if m:
+            continue
+        out.append(re.sub(r'^export\s+(const|function|class|let|var)\s',
+                          r'\1 ', line))
+    return '\n'.join(out)
+
+
+def write_font_data(font_id, out):
+    """Write one font as a file of its own data, registering into the core.
+
+    Nothing of MathJax is in it: the base classes and constants it needs come
+    from the bundle the plugin already has loaded, and it ends by registering
+    itself there.  So a font file costs its own data and no more -- one core
+    serves every font, instead of each font carrying a copy.
+    """
+    pkgdir = font_path(font_id)
+    if pkgdir is None:
+        raise SystemExit('no package folder for font %s' % font_id)
+    _, font_class = font_source(font_id)
+    mjs = pkgdir / 'mjs'
+    pieces = [_strip_module((mjs / 'common.js').read_text(encoding='utf-8'))]
+    for table in sorted((mjs / 'svg').glob('*.js')):
+        pieces.append(_strip_module(table.read_text(encoding='utf-8')))
+    dynamic = sorted((mjs / 'svg' / 'dynamic').glob('*.js'))
+    for table in dynamic:
+        pieces.append(_strip_module(table.read_text(encoding='utf-8')))
+    pieces.append(_strip_module((mjs / 'svg.js').read_text(encoding='utf-8')))
+    title = font_title(font_id)
+    x_height = font_x_height(font_id)
+    body = '\n'.join(pieces)
+    text = (
+        '/*!\n'
+        ' * mathjax-%(id)s.js -- GENERATED FILE, do not edit by hand.\n'
+        ' *\n'
+        ' * The data for one math font, for the Veusz MathJax plugin.  It carries\n'
+        ' * no MathJax: it reads the base classes out of the bundle the plugin has\n'
+        ' * already loaded and registers this font there, so any number of these\n'
+        ' * share one core.  Put it in the plugin\'s data/ directory and restart\n'
+        ' * Veusz.  Built by tools/build_bundle.py --font-data.\n'
+        ' *\n'
+        ' *   %(title)s -- see the LICENSE and NOTICE of the plugin\n'
+        ' */\n'
+        '// MATHJAX-FONT %(header)s\n'
+        '(function () {\n'
+        '  const __veuszMathjax = globalThis.__veuszMathjax;\n'
+        '  if (!__veuszMathjax || !__veuszMathjax.registerFont) {\n'
+        '    throw new Error("this font needs the MathJax bundle from the plugin "\n'
+        '                    + "(data/mathjax_bundle.js); it is not there");\n'
+        '  }\n'
+        '%(body)s\n'
+        '  __veuszMathjax.registerFont({ id: %(id_json)s, title: %(title_json)s,\n'
+        '                               xHeight: %(xheight)s,\n'
+        '                               FontClass: %(class)s });\n'
+        '})();\n'
+    ) % {
+        'id': font_id,
+        'title': title,
+        'body': body,
+        'id_json': json.dumps(font_id),
+        'title_json': json.dumps(title),
+        'xheight': json.dumps(x_height),
+        'class': font_class,
+        'header': json.dumps({
+            'mathjax': MATHJAX_VERSION,
+            'kind': 'data',
+            'default': font_id,
+            'fonts': [{'id': font_id, 'title': title, 'x_height': x_height,
+                       'ranges': len(dynamic)}],
+        }, sort_keys=True),
+    }
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(text, encoding='utf-8')
+    return out
+
+
 # ---------------------------------------------------------------------------
 # entry + esbuild
 # ---------------------------------------------------------------------------
@@ -418,6 +514,11 @@ def make_entry(font_ids, trim):
         'import { SVG } from "@mathjax/src/js/output/svg.js";',
         'import { liteAdaptor } from "@mathjax/src/js/adaptors/liteAdaptor.js";',
         'import { RegisterHTMLHandler } from "@mathjax/src/js/handlers/html.js";',
+        '// what a font data file needs from the core: the two base classes and the',
+        '// direction constants (MathJax has already resolved and bundled them here)',
+        'import { FontData } from "@mathjax/src/mjs/output/common/FontData.js";',
+        'import { SvgFontData } from "@mathjax/src/mjs/output/svg/FontData.js";',
+        'import { V, H } from "@mathjax/src/mjs/output/common/Direction.js";',
     ]
     for font_id in font_ids:
         pkg, font_class = font_source(font_id)
@@ -447,12 +548,41 @@ def make_entry(font_ids, trim):
         '',
         'const texInput = new TeX({ packages: %s });'
         % ('["' + '", "'.join(TEX_PACKAGES) + '"]'),
-        'const FONT_CLASSES = { %s };' % ', '.join(
-            '%s: %s' % (fid, font_source(fid)[1]) for fid in font_ids),
+        '',
+        '// One MathJax, many fonts.  A font can be built in (imported here, the',
+        '// way the released packages do it) or registered at run time by a font',
+        '// data file, which is what someone drops into data/: the file uses the',
+        '// classes below and calls registerFont().  Both end up in FONT_CLASSES,',
+        '// so nothing downstream knows the difference.',
+        'const FONT_CLASSES = {};',
+        'const FONT_TITLES = {};',
+        'const FONT_XHEIGHT = {};',
+        'function registerFont(spec) {',
+        '  if (!spec || !spec.FontClass) return false;',
+        '  FONT_CLASSES[spec.id] = spec.FontClass;',
+        '  FONT_TITLES[spec.id] = spec.title || spec.id;',
+        '  FONT_XHEIGHT[spec.id] = spec.xHeight;',
+        '  return true;',
+        '}',
+        'globalThis.__veuszMathjax = {',
+        '  FontData: FontData, SvgFontData: SvgFontData, V: V, H: H,',
+        '  registerFont: registerFont,',
+        '  fonts: () => Object.keys(FONT_CLASSES),',
+        '};',
+    ]
+    # the fonts this bundle was built with go in through the same door a font
+    # data file uses, so there is one code path for both
+    for info in meta:
+        lines.append('registerFont({ id: %s, title: %s, xHeight: %s, '
+                     'FontClass: %s });'
+                     % (json.dumps(info['id']), json.dumps(info['title']),
+                        json.dumps(info['x_height']), font_source(info['id'])[1]))
+    lines += [
         'const docs = {};',
         'let current = %r;' % font_ids[0],
         '',
         'function docFor(name) {',
+        '  if (!FONT_CLASSES[name]) name = current;',
         '  if (!docs[name]) {',
         '    // the font is selected with the documented option name (fontData)',
         '    const svgOutput = new SVG({',
@@ -784,6 +914,10 @@ def main():
                          'installed, then exit')
     ap.add_argument('--trim', action='store_true',
                     help='drop glyph ranges for scripts plots rarely need')
+    ap.add_argument('--font-data', action='store_true', dest='font_data',
+                    help='write one font as a file of its own data, for data/ '
+                         '(it registers itself into the core bundle rather than '
+                         'carrying a copy of MathJax); needs --font and --out')
     ap.add_argument('--out', default=None)
     ap.add_argument('--fonts-json', default=None,
                     help='where to write the font list '
@@ -799,6 +933,13 @@ def main():
                     help='path to the esbuild binary (default: from --packages)')
     args = ap.parse_args()
 
+    if args.font_data:
+        if not args.font or not args.out:
+            raise SystemExit('--font-data needs --font NAME and --out FILE')
+        path = write_font_data(args.font, Path(args.out))
+        print('[bundle] font data: %s  (%.2f MiB, MathJax not included)'
+              % (path, path.stat().st_size / 1048576))
+        return 0
     if args.fonts:
         font_ids = [f.strip() for f in args.fonts.split(',') if f.strip()]
     elif args.font:

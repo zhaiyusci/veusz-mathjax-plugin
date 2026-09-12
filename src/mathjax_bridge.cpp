@@ -775,6 +775,52 @@ MJX_EXPORT void js_host_shutdown(int handle) {
     if (st) shutdown_state(st);
 }
 
+// js_host_eval() 在已经加载的运行时里再执行一个脚本文件。
+//
+// 这是字体数据文件挂进已有内核的方式:一个字体文件只注册字体数据(它从
+// __veuszMathjax 拿内核暴露的 FontData/SvgFontData 并调用 registerFont),
+// 本身不含 MathJax,所以同一个内核可以被十几种字体共用,而不是每种字体带一份。
+// 返回 0 成功;1 无效句柄,2 读不到文件,3 脚本抛异常(错误写在 out_error)。
+MJX_EXPORT int js_host_eval(int handle, const char* script_path, char** out_error) {
+    JsState* st = state_for_handle(handle);
+    if (!st || !st->ctx) {
+        if (out_error) *out_error = dup_string("invalid js host handle");
+        return 1;
+    }
+    if (!script_path || !*script_path) {
+        if (out_error) *out_error = dup_string("no script path");
+        return 2;
+    }
+    int len = 0;
+    char* src = read_file(script_path, &len);
+    if (!src) {
+        if (out_error) *out_error = dup_string("cannot read the script");
+        return 2;
+    }
+    JSValue val = JS_Eval(st->ctx, src, static_cast<size_t>(len), script_path,
+                          JS_EVAL_TYPE_GLOBAL);
+    free(src);
+    if (JS_IsException(val)) {
+        JSValue err = JS_GetException(st->ctx);
+        if (out_error) {
+            JSValue msg = JS_GetPropertyStr(st->ctx, err, "message");
+            const char* err_str = nullptr;
+            if (!JS_IsUndefined(msg) && !JS_IsException(msg)) {
+                err_str = JS_ToCString(st->ctx, msg);
+            }
+            if (!err_str) err_str = JS_ToCString(st->ctx, err);
+            *out_error = dup_string(err_str ? err_str : "unknown JS exception");
+            if (err_str) JS_FreeCString(st->ctx, err_str);
+            JS_FreeValue(st->ctx, msg);
+        }
+        JS_FreeValue(st->ctx, err);
+        JS_FreeValue(st->ctx, val);
+        return 3;
+    }
+    JS_FreeValue(st->ctx, val);
+    return 0;
+}
+
 MJX_EXPORT int js_host_render(
     int handle,
     const char* fn_name,
