@@ -155,13 +155,26 @@ if veusz.utils.Renderer is original_renderer:
 print('Renderer    : replaced by the plugin')
 
 # --------------------------------------------------------- 3. drawing works
-tmp = Path(tempfile.mkdtemp(prefix='veusz-mathjax-smoke-'))
+# An explicit directory also works in file sandboxes where private temporary
+# directories cannot be used by Qt's native exporter.
+output_dir = os.environ.get('VEUSZ_MATHJAX_TEST_OUTPUT')
+tmp = (Path(output_dir) if output_dir
+       else Path(tempfile.mkdtemp(prefix='veusz-mathjax-smoke-')))
+tmp.mkdir(parents=True, exist_ok=True)
 LABEL_TEX = r'x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}'
 ok = True
 
 
+def load_image(path):
+    img = qt.QImage(str(path))
+    if img.isNull():
+        die('export could not be read: %s (check output directory '
+            'permissions)' % path)
+    return img.convertToFormat(qt.QImage.Format.Format_ARGB32)
+
+
 def ink(path):
-    img = qt.QImage(str(path)).convertToFormat(qt.QImage.Format.Format_ARGB32)
+    img = load_image(path)
     n = 0
     for y in range(img.height()):
         for x in range(img.width()):
@@ -234,7 +247,7 @@ def glyph_height_pt(text, size_pt, settings, dpi, tag=''):
     glyph_doc(text, size_pt, settings)(ifc)
     path = tmp / ('glyph-%s-%d.png' % (tag or 'x', dpi))
     ifc.Export(str(path), dpi=dpi)
-    img = qt.QImage(str(path)).convertToFormat(qt.QImage.Format.Format_ARGB32)
+    img = load_image(path)
     ys = [y for y in range(img.height())
           for x in range(img.width()) if (img.pixel(x, y) >> 24) & 0xFF]
     if not ys:
@@ -252,7 +265,7 @@ def ink_pt(text, size_pt, settings, dpi, tag=''):
     glyph_doc(text, size_pt, settings)(ifc)
     path = tmp / ('ink-%s-%d.png' % (tag or 'x', dpi))
     ifc.Export(str(path), dpi=dpi)
-    img = qt.QImage(str(path)).convertToFormat(qt.QImage.Format.Format_ARGB32)
+    img = load_image(path)
     xs, ys = [], []
     for y in range(img.height()):
         for x in range(img.width()):
@@ -272,7 +285,7 @@ def ink_of(build, name, dpi):
     build(ifc)
     path = tmp / ('%s-%d.png' % (name, dpi))
     ifc.Export(str(path), dpi=dpi)
-    img = qt.QImage(str(path)).convertToFormat(qt.QImage.Format.Format_ARGB32)
+    img = load_image(path)
     n = 0
     for y in range(img.height()):
         for x in range(img.width()):

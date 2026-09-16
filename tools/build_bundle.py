@@ -564,6 +564,8 @@ def make_entry(font_ids, trim):
         'import { mathjax } from "@mathjax/src/js/mathjax.js";',
         'import { TeX } from "@mathjax/src/js/input/tex.js";',
         'import { SVG } from "@mathjax/src/js/output/svg.js";',
+        'import { VeuszSvgWrapperFactory, installVeuszTextApi } from %s;'
+        % json.dumps((PROJECT / 'src' / 'mathjax_text.js').as_posix()),
         'import { liteAdaptor } from "@mathjax/src/js/adaptors/liteAdaptor.js";',
         'import { RegisterHTMLHandler } from "@mathjax/src/js/handlers/html.js";',
         '// what a font data file needs from the core: the two base classes and the',
@@ -639,6 +641,7 @@ def make_entry(font_ids, trim):
         '    // the font is selected with the documented option name (fontData)',
         '    const svgOutput = new SVG({',
         '      fontData: FONT_CLASSES[name],',
+        '      wrapperFactory: new VeuszSvgWrapperFactory(),',
         '      fontCache: "local",',
         '      linebreaks: { inline: false },',
         '    });',
@@ -680,6 +683,7 @@ def make_entry(font_ids, trim):
         '  return current;',
         '};',
         'globalThis.currentFont = function () { return current; };',
+        'installVeuszTextApi(docFor, () => current, adaptor, extractSvg);',
         '',
         'globalThis.render = function (latex) {',
         '  try {',
@@ -708,10 +712,11 @@ def run_esbuild(source, outfile, font_ids=()):
         raise SystemExit('esbuild not found at %s (run npm install, or pass '
                          '--esbuild)' % esbuild)
     node, _ = find_tools()
-    # the generated entry must sit next to a node_modules tree we resolve from,
-    # otherwise esbuild cannot find @mathjax/src
+    # Keep generated files in our workspace, including for read-only/offline
+    # --packages trees. NODE_PATH supplies the dependency search roots.
     mjx = find_package('@mathjax/src')
-    entry = mjx.parent.parent / 'entry.generated.js'
+    WORK.mkdir(parents=True, exist_ok=True)
+    entry = WORK / 'entry.generated.js'
     entry.write_text(source, encoding='utf-8')
     alias = '@mathjax/src/mjs=%s' % (mjx / 'mjs')
     # a font package of ours does not live in the node_modules tree esbuild
@@ -736,8 +741,12 @@ def run_esbuild(source, outfile, font_ids=()):
             '--platform=browser', '--format=iife', '--alias:%s' % alias]
     cmd += local_aliases
     cmd += ['--outfile=%s' % outfile]
-    proc = subprocess.run(cmd, cwd=str(WORK))
-    entry.unlink(missing_ok=True)
+    env = os.environ.copy()
+    env['NODE_PATH'] = os.pathsep.join(str(p) for p in PACKAGES_DIRS)
+    try:
+        proc = subprocess.run(cmd, cwd=str(WORK), env=env)
+    finally:
+        entry.unlink(missing_ok=True)
     if proc.returncode != 0:
         raise SystemExit('esbuild failed (see the output above)')
     return outfile

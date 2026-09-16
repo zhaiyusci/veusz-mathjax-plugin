@@ -15,3 +15,8 @@
 *.so binary
 *.dylib binary
 *.js binary
+
+# ...except the bundle's source, which is hand-written text and should diff
+# (the *.js binary rule above is for the generated bundles in data/ and fonts/;
+# it expands to -diff -merge -text, so all three have to be undone here).
+src/*.js text diff merge

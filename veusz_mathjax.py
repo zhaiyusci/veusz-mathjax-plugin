@@ -58,6 +58,46 @@ import threading
 import time
 from pathlib import Path
 
+# The bridge shares its state table and ex-height across hosts. In particular,
+# compile -> Qt measurement -> typeset must not interleave with another paint.
+_HOST_LOCK = threading.RLock()
+
+
+class TextOutlineUnavailable(RuntimeError):
+    """Qt cannot turn a text run into outlines, so the run must not be used.
+
+    A raster-only font (Windows ships several: MS Sans Serif, System,
+    Fixedsys, ...) has glyphs but no outlines, so ``QPainterPath.addText`` and
+    ``QRawFont.pathForGlyph`` return nothing.  Rendering the run anyway leaves
+    the label blank, so the caller falls back to letting MathJax draw the text
+    with its own math font instead.
+    """
+
+
+_warned_fonts = set()
+
+
+def _warn_unoutlinable(font_family, text):
+    """Say once, in the log and on stderr, that a Font has no outlines."""
+    key = font_family or '(default)'
+    if key in _warned_fonts:
+        return
+    _warned_fonts.add(key)
+    message = ('veusz-mathjax: the Font %r has no glyph outlines (a raster '
+               'font), so %r could not be drawn in it; the formula text falls '
+               'back to the MathJax font. Choose an outline font (Arial, Times '
+               'New Roman, ...) in the Font row to use it for text.' %
+               (key, text[:40]))
+    sys.stderr.write(message + '\n')
+    try:
+        base = _plugin_dir()
+        if base is not None:
+            with (base / 'veusz_mathjax.log').open('a', encoding='utf-8') as fh:
+                fh.write('%s %s\n' % (time.strftime('%Y-%m-%d %H:%M:%S'),
+                                      message))
+    except Exception:
+        pass
+
 # --------------------------------------------------------------------------
 # data discovery
 # --------------------------------------------------------------------------
@@ -393,6 +433,14 @@ class JsHost:
                                % self.bundle)
         self.lib = lib
         self.set_font(self.default_font)
+        try:
+            version, _ = self._call('veuszTextVersion', '', postprocess=False)
+            self.text_font_api = version == b'1'
+        except RuntimeError:
+            self.text_font_api = False
+        if not self.text_font_api:
+            sys.stderr.write('veusz-mathjax: old bundle; rebuild mathjax_bundle.js '
+                             'to use the Veusz Font for formula text.\n')
 
     def load_font(self, path):
         """Register a font data file's font into this host.
@@ -418,7 +466,8 @@ class JsHost:
                                % (Path(path).name, message or 'rc=%d' % rc))
         return True
 
-    def _call(self, fn_name, arg, size=0.0, display=0, color=None):
+    def _call(self, fn_name, arg, size=0.0, display=0, color=None,
+              postprocess=True):
         """Call a function the bundle defines; returns (text, (w, h, baseline))."""
         out = ctypes.c_void_p()
         out_len = ctypes.c_size_t()
@@ -429,7 +478,7 @@ class JsHost:
         rc = self.lib.js_host_render(
             self.handle, fn_name.encode('utf-8'), str(arg).encode('utf-8'),
             float(size), int(display),
-            color.encode('utf-8') if color else None, 1,
+            color.encode('utf-8') if color else None, int(postprocess),
             ctypes.byref(out), ctypes.byref(out_len), ctypes.byref(w),
             ctypes.byref(h), ctypes.byref(b), ctypes.byref(err))
         if rc != 0:
@@ -476,7 +525,14 @@ class JsHost:
             self.lib.mathjax_set_ex_height(float(xh))
         self.font = font
 
-    def render(self, tex, text_size, color=None, display=False, font=None):
+    def render(self, tex, text_size, color=None, display=False, font=None,
+               text_font=None, measure_text=None):
+        with _HOST_LOCK:
+            return self._render(tex, text_size, color, display, font,
+                                text_font, measure_text)
+
+    def _render(self, tex, text_size, color, display, font,
+                text_font, measure_text):
         """Return (svg_bytes, width_pt, height_pt, baseline_pt).
 
         ``display`` picks MathJax's display style -- larger fractions, limits
@@ -491,13 +547,40 @@ class JsHost:
         target = font if font in self._x_height else self.default_font
         if target != self.font:
             self.set_font(target)
-        key = (tex, float(text_size), color or '', bool(display), self.font)
+        key = (tex, float(text_size), color or '', bool(display), self.font,
+               text_font)
         hit = self.svg_cache.get(key)
         if hit is not None:
             return hit
-        svg, (w, h, b) = self._call(
-            'render' if display else 'renderInline', tex,
-            size=text_size, display=1 if display else 0, color=color)
+        # ex-height belongs to the DLL, not an individual host. Restore it even
+        # when this host's font did not change since another host was drawn.
+        xh = self._x_height.get(self.font)
+        if xh:
+            self.lib.mathjax_set_ex_height(float(xh))
+        if self.text_font_api and measure_text is not None:
+            request = json.dumps({'tex': tex, 'display': bool(display)})
+            runs, _ = self._call('prepareVeuszText', request, postprocess=False)
+            try:
+                measured = measure_text(json.loads(runs))
+            except TextOutlineUnavailable:
+                # The Font row's font cannot be outlined: drop the compiled
+                # item and render the formula the previous way, so its text is
+                # drawn with the math font instead of coming out blank.
+                try:
+                    self._call('discardVeuszText', '', postprocess=False)
+                except Exception:
+                    pass
+                svg, (w, h, b) = self._call(
+                    'render' if display else 'renderInline', tex,
+                    size=text_size, display=int(display), color=color)
+            else:
+                svg, (w, h, b) = self._call(
+                    'renderVeuszText', json.dumps(measured),
+                    size=text_size, display=int(display), color=color)
+        else:
+            svg, (w, h, b) = self._call(
+                'render' if display else 'renderInline', tex,
+                size=text_size, display=int(display), color=color)
         if not svg:
             raise RuntimeError('empty SVG')
         result = (svg, w, h, b)
@@ -583,6 +666,106 @@ def build_renderer_class(textrender, qt, hosts):
             i += 1
         parts.append('Z')
         return ' '.join(parts)
+
+    _text_runs = {}
+
+    def text_font_key(font):
+        """Include paint-relevant QFont properties omitted by toString()."""
+        return (font.toString(), font.styleName(), font.kerning(),
+                font.stretch(), font.letterSpacingType().value,
+                font.letterSpacing(), font.wordSpacing(),
+                font.capitalization().value, font.underline(),
+                font.strikeOut(), font.overline())
+
+    def measure_text_runs(requests, label_font):
+        """Shape entire mtext runs with Qt, including system font fallback.
+
+        Returns one entry per run: its advance/height/depth in the units
+        MathJax lays out with, and its glyph outlines in the SVG's own
+        coordinates -- both taken from the same shaped glyphs, so the box the
+        formula reserves and the ink drawn in it cannot disagree.
+        """
+        measured = {}
+        for request in requests:
+            text, variant = request['text'], request['variant']
+            bold = request.get('bold', 'bold' in variant)
+            italic = request.get('italic', 'italic' in variant)
+            key = (text_font_key(label_font), text, variant, bold, italic)
+            run = _text_runs.get(key)
+            if run is None:
+                font = qt.QFont(label_font)
+                original_px = qt.QFontInfo(font).pixelSize()
+                font.setPixelSize(int(_OUTLINE_PX))
+                if original_px > 0:
+                    ratio = _OUTLINE_PX / original_px
+                    if font.letterSpacingType() == qt.QFont.SpacingType.AbsoluteSpacing:
+                        font.setLetterSpacing(font.letterSpacingType(),
+                                              font.letterSpacing() * ratio)
+                    font.setWordSpacing(font.wordSpacing() * ratio)
+                # Text emphasis augments the element's font; the family always
+                # remains Veusz's, including for textsf/texttt variants.
+                if bold or italic:
+                    # A named Regular face can otherwise override setBold/Italic.
+                    font.setStyleName('')
+                if bold:
+                    font.setBold(True)
+                if italic:
+                    font.setItalic(True)
+                font.setStyleStrategy(qt.QFont.StyleStrategy.PreferOutline)
+                font.setHintingPreference(qt.QFont.HintingPreference.PreferNoHinting)
+                layout = qt.QTextLayout(text, font)
+                layout.beginLayout()
+                line = layout.createLine()
+                if line.isValid():
+                    line.setLineWidth(1e9)
+                layout.endLayout()
+                path = qt.QPainterPath()
+                advance = 0.0
+                if line.isValid():
+                    advance = line.horizontalAdvance()
+                    baseline = line.ascent()
+                    # Each glyph run supplies its actual fallback face and
+                    # shaped positions (kerning, ligatures, RTL and CJK).
+                    for glyph_run in layout.glyphRuns():
+                        raw = glyph_run.rawFont()
+                        for glyph, pos in zip(glyph_run.glyphIndexes(),
+                                              glyph_run.positions()):
+                            outline = raw.pathForGlyph(glyph)
+                            transform = qt.QTransform.fromTranslate(
+                                pos.x(), pos.y() - baseline)
+                            path.addPath(transform.map(outline))
+                # Decorations are not part of raw glyph outlines. Preserve the
+                # Veusz Underline setting (and QFont's other line decorations).
+                metrics = qt.QFontMetricsF(font)
+                thickness = max(metrics.lineWidth(), 1.0)
+                for enabled, y in ((font.underline(), metrics.underlinePos()),
+                                   (font.strikeOut(), -metrics.strikeOutPos()),
+                                   (font.overline(), -metrics.overlinePos())):
+                    if enabled and advance > 0:
+                        path.addRect(0.0, y - thickness / 2, advance, thickness)
+                box = path.boundingRect()
+                # A raster-only font has glyphs but no outlines, so the run
+                # would occupy its advance and draw nothing. Say so instead:
+                # the caller then renders the formula with the MathJax font.
+                # A run that is all whitespace legitimately has no outline.
+                if path.isEmpty() and text.strip():
+                    _warn_unoutlinable(label_font.family(), text)
+                    raise TextOutlineUnavailable(
+                        'no glyph outlines for %r in %r'
+                        % (text[:40], label_font.family()))
+                # Advance is not ink width: keep spaces and italic bearings,
+                # without shifting the origin or pushing the next run away.
+                run = {
+                    'w': advance / _OUTLINE_PX,
+                    'h': max(0.0, -box.top()) / _OUTLINE_PX,
+                    'd': max(0.0, box.bottom()) / _OUTLINE_PX,
+                    'path': _svg_path_data(path) if not path.isEmpty() else '',
+                }
+                if len(_text_runs) >= 512:
+                    _text_runs.clear()
+                _text_runs[key] = run
+            measured[request['key']] = run
+        return measured
 
     def _text_to_path_data(text, attrs, label_family, em_units=None):
         """Outline for one <text> element, in the element's own coordinates.
@@ -697,7 +880,7 @@ def build_renderer_class(textrender, qt, hosts):
         converted = _TEXT_ELEM_RE.sub(one_element, svg)
         if len(_converted) > 128:
             _converted.clear()
-        _converted[svg] = (converted, leftover)
+        _converted[key] = (converted, leftover)
         return converted, leftover
 
     def em_in_user_units(svg, w_pt, size_pt):
@@ -815,9 +998,12 @@ def build_renderer_class(textrender, qt, hosts):
             except Exception:
                 color = None
 
-            host = hosts.host_for(self.font_id)
-            svg, w_pt, h_pt, base_pt = host.render(self.text, size, color,
-                                                   self.display, self.font_id)
+            with _HOST_LOCK:
+                host = hosts.host_for(self.font_id)
+                svg, w_pt, h_pt, base_pt = host.render(
+                    self.text, size, color, self.display, self.font_id,
+                    text_font=text_font_key(self.font),
+                    measure_text=lambda runs: measure_text_runs(runs, self.font))
             if not svg:
                 raise RuntimeError('empty SVG')
             svg, left_as_text = svg_text_as_paths(

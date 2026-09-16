@@ -47,7 +47,7 @@ One font, **Computer Modern (TeX)**: the face LaTeX has used for decades, and
 what most people expect a formula to look like. Nothing to choose, smallest
 download, and the lightest: 0.13 s to start, +14 MB of memory.
 
-**`veusz-mathjax-plugin-<version>-allfonts.zip` — 16.4 MB — "the math should
+**`veusz-mathjax-plugin-<version>-allfonts.zip` — 16.8 MB — "the math should
 match the rest of the figure."**
 Twenty faces, chosen per text element in the MathJax row: New Computer Modern
 (MathJax's own default), Computer Modern (TeX), Modern, **STIX Two** and
@@ -78,7 +78,7 @@ you already have. See *Adding another font*.
 | | fonts | download | loads in |
 |---|---|---|---|
 | `…-<version>.zip` | 1 — Computer Modern (TeX) | 1.8 MB | 0.11 s |
-| `…-<version>-allfonts.zip` | 20 | 16.4 MB | 1.4 s |
+| `…-<version>-allfonts.zip` | 20 | 16.8 MB | 1.4 s |
 | `fonts/mathjax-<name>.js` | 1, added to whatever you have | 0.9–10.9 MB | — |
 
 Those costs are measured, and they are only paid once a label actually asks for
@@ -147,11 +147,40 @@ file.
   render it up to 19% off — that is the bug class that made formulas 33% too
   large in 0.2.0.
 * The formula takes its colour from the current pen; changing the colour, the
-  size or the font re-renders it, and results are cached per (text, size,
-  colour, style, font).
+  size or either font re-renders it. The cache also distinguishes the Veusz
+  text font and its style, so switching Font cannot reuse another face's text.
 * If anything goes wrong (a MathJax error, a missing data file), the plugin falls
   back to the normal text renderer instead of breaking the plot — the label then
   shows the source text, and the reason appears at startup and in the log.
+
+### Text inside a formula uses Veusz's Font
+
+With MathJax enabled, write ordinary words inside `\text{…}`:
+
+```latex
+\text{拟合 Fit: } y = ax+b \text{，斜率 } a=2
+```
+
+The **Veusz Font row** now selects the font for the entire text run — Latin
+letters, digits and Chinese alike. Veusz's bold, italic and underline settings
+apply to that text; `\textbf{…}` and `\textit{…}` can add emphasis locally.
+Missing characters use Qt's system font fallback. Mathematics outside the text
+run, including `\mathrm{…}`, still uses the **MathJax font chooser**.
+
+Qt shapes and measures the text before MathJax lays out the formula, so the
+following symbols, fractions and subscripts use its actual width and baseline.
+Text is exported as vector outlines, not resolution-dependent SVG text. Font
+selection applies to MathJax text nodes (`mtext`, including `\textsf`/`\texttt`),
+not just literal occurrences of `\text`; those commands do not override the
+Veusz font family. Nested mathematics inside `\text` remains mathematics.
+
+This needs **both the updated `veusz_mathjax.py` and a rebuilt
+`data/mathjax_bundle.js`**; the bridge DLL is unchanged. Restart Veusz after
+replacing them. An older bundle remains usable with the old text-font behaviour
+and emits a warning. This is not a new `$…$` mixed-label mode: the whole label
+is still TeX, and the existing Display style setting is unchanged. Automatic
+text wrapping and bitmap-only/colour emoji font rendering are not supported
+by this outline-based text path.
 
 ## Upgrading from 0.2.x
 
@@ -358,6 +387,7 @@ would work as well.
 
 ```bash
 python test/smoke_test.py       # renders a TeX label + a TeX axis label
+python test/test_text_font.py   # Veusz-font text metrics, styles, cache and math isolation
 ```
 
 Run it with the Python of the Veusz you actually use (or with `PYTHONPATH`
@@ -406,6 +436,23 @@ access to Veusz's internals. It uses exactly six hooks:
    the current pen, and results are cached per (text, size, colour, style,
    font).
 
+The six hooks above are the whole of the Veusz side. Text runs inside the
+formula are handled by the bundle instead: the `\text`/`mtext` runs are shaped
+and outlined by Qt rather than by the math font, which is what lets the **Font**
+row select them. That is a two-stage call — the bundle compiles the formula and
+returns its text runs, Python measures each run with `QTextLayout` (advance, ink
+height/depth, glyph outlines, including Qt's system font fallback), and the same
+compiled formula is then typeset with those measurements. TeX is parsed once, so
+macros and counters are not evaluated twice. The protocol is the
+`prepareVeuszText` / `renderVeuszText` pair the bundle installs; a bundle that
+lacks it is detected through `veuszTextVersion`, and the formula is then rendered
+the previous way, with a warning.
+
+Measuring before layout is the point: MathJax has already reserved a box from its
+own estimated text metrics by the time a wrapper draws, and a `<text>` left in
+the SVG is sized by the paint device rather than by the SVG. Only shaping the run
+before typesetting makes the advance and the baseline real.
+
 The bridge is called through its multi-bundle API (`js_host_*`) rather than the
 older `mathjax_*` one, because that can call *any* function the bundle defines —
 `setFont` included. Switching font also re-sets the bridge's ex-height from
@@ -449,37 +496,32 @@ copy of it, so `data/` holds three artefacts with one licence each (see
   every font's glyph tables have to be in the engine at once. Nothing of that is
   in upstream Veusz, and none of it is paid at all until a label asks for
   MathJax.
-* **Characters the math font lacks come from another font.** CJK inside a
-  formula (`\text{中文}`), a rare symbol, an emoji: MathJax hands those to the
-  SVG as a `<text>` element, and they are drawn at the font size you asked for,
-  in the font the text element is set in — the **Font** row in the formatting
-  panel — so a formula's CJK matches the text around it. (MathJax itself names
-  only a generic family for them, and sizes them as *2ex* of the chosen math
-  font, which made the same characters 17% larger under Fira than under Termes
-  and 12% smaller than a plain label at that size; the plugin substitutes the
-  element's own font and one em, so neither the font nor the math font moves
-  them. If that font has no such character either, Qt's system fallback supplies
-  it, as it always did.) Measured in Veusz 4.2.1/Qt 6.10.2, a 20pt `\text{珠子}`
-  is 39.6x19.4pt of paper under every one of the twenty math fonts, and 39.6x19.4pt
-  as a plain label. Their design and exact spacing are that font's, not the math
-  font's. The plugin paints them as
-  outlines rather than leaving them as text, because text does not survive
-  Veusz's painting: every widget is recorded onto a device and replayed, and Qt
-  sizes SVG text against that device's resolution instead of in the SVG's own
-  units, so the characters came out **dpi/72 times too large** — measured x1.3 on
-  a 96dpi screen, x2.1 in a 150dpi export and x4.2 at 300dpi — and spilled out of
-  the box the formula had reserved for them (a 20pt `\text{珠子}` was given a
-  40x19pt box and drew 150x72px of ink into an 83x40px one). Measured in Veusz
-  4.2.1 with Qt 6.10.2, the same glyph through the recording device came out
-  478x243px where the path form stayed at 216x68px. Everything else in the
-  formula was always exact: it is drawn as paths, and a path is only
-  coordinates. Converting the text to outlines here — Qt draws the identical
-  pixels (1 of 5393 differs, IoU 1.000) — makes the characters page-relative and
-  filled like the rest of the formula: `\text{珠}` now measures 17.2pt of paper
-  on a 96dpi screen, 16.8pt at 150dpi and 16.3pt at 300dpi, with nothing left as
-  text. `test/smoke_test.py` fails if a character the font does not have differs
-  by more than 8% between 96dpi and 300dpi, overflows its box, is still painted
-  as `<text>`, ignores the Font setting, or changes size with the math font.
+* **Formula text comes from the Font row, and is drawn as outlines.** A `\text`
+  run — Latin, digits, CJK, an emoji, a rare symbol — is shaped by Qt in the font
+  the text element is set in (the **Font** row), with Qt's system fallback for a
+  character that font lacks, and is painted as vector outlines. That is what
+  makes a formula's `\text{中文}` match the text around it and hold its size at
+  any dpi. MathJax's own estimate would not: it names only a generic family and
+  sizes those characters as *2ex* of the chosen math font, which measured 17%
+  larger under Fira (ex/em 0.527) than under Termes (0.441), and 12% smaller
+  than a plain label of the same size. Outlines rather than `<text>` are also
+  required by Veusz's painting: widgets are recorded onto a device and replayed,
+  Qt sizes SVG text against that device's resolution instead of the SVG's own
+  units, so `<text>` came out **dpi/72 times too large** — measured x1.3 on a
+  96dpi screen and x4.2 at 300dpi — and spilled out of the box reserved for it.
+  A character that is *not* in a text run (a rare symbol in the mathematics
+  itself) still goes through that same `<text>`-to-outline conversion.
+  `test/smoke_test.py` fails if such a character differs by more than 8% between
+  96dpi and 300dpi, overflows its box, is still painted as `<text>`, ignores the
+  Font setting, or changes size with the math font.
+* Emphasised text is limited to what Qt can outline: bold, italic and underline
+  (`\textbf`, `\textit`, the element's own Bold/Italic/Underline settings, or CSS
+  `font-weight`/`font-style` inside the formula). A **raster-only font** — the
+  Font row set to a font Windows ships without outlines, such as *MS Sans Serif*
+  or *System* — cannot be outlined at all, so the formula's text falls back to
+  the MathJax font rather than coming out blank, and the reason is written once
+  to `veusz_mathjax.log`; pick an outline font to use it for text. Text wrapping
+  (`hsize`/`maxwidth` inside `\text`) is not supported by this path.
 * Prebuilt binaries are **Windows x64 only** (see *Platforms*).
 
 ## Related
