@@ -1,0 +1,18 @@
+{
+  "mathjax": "4.1.3",
+  "default": "tex",
+  "fonts": [
+    {
+      "id": "tex",
+      "title": "Computer Modern (TeX)",
+      "x_height": 0.442,
+      "ranges": 0
+    },
+    {
+      "id": "stix2",
+      "title": "STIX Two",
+      "x_height": 0.479,
+      "ranges": 25
+    }
+  ]
+}
