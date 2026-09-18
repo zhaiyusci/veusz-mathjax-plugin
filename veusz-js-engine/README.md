@@ -73,6 +73,10 @@ veusz-js-engine/
       fonts.json               what the builder put in the bundle, as it wrote it
       test/test_two_layer.py   its own tests, beside it
       test/test_text_in_formulas.py
+    katex/                     a second feature: a parser, and no drawing of
+      feature.js               its own -- it hands Veusz the MathML
+      katex.min.js             and Veusz typesets it with its own widget
+      LICENSE-KATEX.txt
   test/test_platform.py        the platform's test
 ```
 
@@ -173,10 +177,14 @@ this is not three lines:
   representation is in use is a macro at *build* time — `JS_NAN_BOXING` would
   make it a plain `uint64_t`. Guessing wrong does not raise; it corrupts the
   host process.
-* **A runtime belongs to the thread that created it** — the stack top is
-  captured in `JS_NewRuntime` — and Veusz paints from a worker thread *and* the
-  main thread. So every call re-anchors the engine and re-sizes its stack
-  budget to the thread that is calling now.
+* **QuickJS is told how much stack it may use, and it cannot find out for
+  itself.** Its overflow check is `sp - alloca_size < stack_top - stack_size`
+  against the *current C stack pointer* (`js_check_stack_overflow` in
+  quickjs.c), and both numbers come from the host — `JS_UpdateStackTop` and
+  `JS_SetMaxStackSize`. There is no OS query anywhere in the engine. So the
+  platform creates one thread with a stack it chooses (40 MiB), and every
+  runtime is created *and* called there: the budget is a constant, and which of
+  Veusz's threads asked stops mattering.
 
 That binding is 200 lines of a 2100-line file. The rest is Veusz: the settings
 a feature declares, the properties panel, the draw seam, working out where the
@@ -331,12 +339,24 @@ enough:
 | `veusz.error(msg)` | cannot draw — the platform shows `msg` where it would have gone |
 | `{measure: [...]}` | I need these words shaped by Qt first (see above) |
 | `{load: 'fonts/x.js'}` | read that file of mine, then ask me to draw again |
+| `veusz.delegate(text)` | **you** draw this text — it goes to Veusz's own renderer |
 
 `{load: …}` is how a feature keeps a font's megabytes out of its startup path.
 It names a file under its **own** `fonts/` — the only thing the platform will
 ever read on a feature's behalf — and the platform reads it once, then calls
 `veuszRender` again with the same request. A feature that needs nothing simply
 never says it, which is every feature that is not carrying extra fonts.
+
+`veusz.delegate(text)` is the one reply that draws nothing at all. The platform
+hands the text to the renderer Veusz would have used for that label — its own —
+so a feature can say *what* should be drawn without knowing *how*, and without
+any drawing library on its side. The KaTeX feature uses it to hand over the
+MathML that Veusz typesets itself; the platform never learns what the text
+means (it does not know a `<math>` element from any other string). Two details
+that matter: the delegated text is handed to the *native* renderer rather than
+back into the hooks, or a feature would be asked about its own text for ever;
+and it is drawn instead of the label's text, so the document keeps the source
+the user typed.
 
 > **Underneath.** The primitive is one global function, one string in, one
 > string out — the platform looks the name up on the global object (a flat
@@ -586,14 +606,22 @@ extend this:
   third-party JavaScript file cannot touch anything outside its own
   computation. There is a 256 MB memory cap. What is **not** covered is a
   timeout or an interrupt handler, so a file with an infinite loop hangs Veusz.
-* **The JS runtime is bound to a thread**, and Veusz paints from more than one.
-  QuickJS captures the stack top when the runtime is created and tests against
-  it afterwards, so calling from another thread used to die with
-  `RangeError: Maximum call stack size exceeded` on ordinary formulas. Every
-  call now re-anchors the engine to the calling thread and re-sizes the stack
-  budget to that thread; the platform also takes a lock around every call,
-  because one runtime is not safe to enter twice at once. A caller going around
-  this API has to do the same.
+* **The JS engine runs on a thread of the platform's own.** QuickJS does not
+  look up the stack it has: it compares the current C stack pointer against a
+  top and a budget the host gives it, so *whoever calls* decides what the
+  engine may do. Veusz's paint threads are not ours to size and are not all the
+  same, which made a formula's depth limit depend on the thread — measured, a
+  thread with 2.88 MiB reserved left 1.15 MiB of budget and laid out 16 nested
+  fractions. The platform now owns a thread with a 40 MiB stack and hands every
+  call to it, so the budget is 16 MiB and the depth limit is 288 nested
+  fractions (`\sqrt` stops at 128, `\left(` at 320, superscripts at 64), whoever
+  asks. The two numbers move together on purpose: the budget is a fraction of
+  the thread, and a budget that reached the end of it would be a guard page
+  rather than a catchable error.
+  Two consequences worth knowing: a call from any thread is marshalled and
+  waits (microseconds), and one runtime is still never entered twice at once —
+  the engine lock is taken on the engine thread, and a lock held *across* the
+  hop would deadlock against it.
 * **Under the installed, frozen Veusz there is no `sys.stdout` or
   `sys.stderr`.** The windowed app starts with both set to `None`, so a
   `print()` anywhere on the load path raises `AttributeError: 'NoneType'

@@ -153,13 +153,14 @@ class TwoLayerTests(unittest.TestCase):
         load(PLATFORM)
         platform = getattr(veusz.utils, 'js_engine', None)
         self.assertIsNotNone(platform, 'the platform did not publish itself')
-        # the platform shipped this feature in features/mathjax, so
-        # loading the platform is enough: Veusz was told about one plugin
+        # the platform ships its features in features/, so loading the platform
+        # is enough: Veusz was told about one plugin, not one per feature
         loaded = platform.features()
-        self.assertEqual([p.parent.name for p in loaded], ['mathjax'])
-        self.assertEqual(loaded[0], FEATURE)
-        # and the feature asked for the JavaScript it carries
-        self.assertEqual(platform.feature_names(), ['mathjax'])
+        self.assertIn(FEATURE, loaded)
+        self.assertEqual(sorted(p.parent.name for p in loaded),
+                         sorted(platform.feature_names()))
+        # this feature is one of them, whatever else the platform ships
+        self.assertIn('mathjax', platform.feature_names())
         # a JavaScript feature is known by its entry point
         self.assertIn(FEATURE, [Path(p) for p in platform.runtimes()])
 

@@ -136,6 +136,21 @@
         });
     };
 
+    /*
+     * "Veusz, draw this text yourself."
+     *
+     * The platform does not know what the text means; it hands it to the same
+     * renderer Veusz would have used for the label.  That is what makes a
+     * markup a feature can produce but not draw -- MathML, which Veusz renders
+     * with its own widget -- reachable from JavaScript, with no drawing code
+     * and no library on this side at all.
+     *
+     *   return veusz.delegate('<math><mi>x</mi></math>');
+     */
+    veusz.delegate = function (text) {
+        return JSON.stringify({delegate: String(text)});
+    };
+
     /* An ex measurement in points: one ex is `exPerEm` of an em, and one em is
      * `sizePt` points.  There is deliberately no default -- the spread between
      * real fonts is wide enough (0.387 to 0.531) that a guess is visibly

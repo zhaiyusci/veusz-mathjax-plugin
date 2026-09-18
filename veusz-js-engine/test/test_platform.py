@@ -10,8 +10,10 @@ the compiled bridge used to be for.
 """
 import json
 import os
+import queue
 import re
 import sys
+import threading
 import unittest
 from pathlib import Path
 
@@ -34,6 +36,26 @@ if WITH_VEUSZ:
     import veusz.windows.mainwindow                          # noqa: E402,F401
 else:
     qt = None
+
+
+def reserved_stack_of_this_thread():
+    """How much stack this thread really has, from the OS, or None.
+
+    Windows only, and used to check the platform's budget against the stack it
+    is a fraction of: the budget is the engine's own check, so a budget that
+    reaches the end of the real stack is a guard page instead of an error.
+    """
+    import ctypes
+    try:
+        kernel32 = ctypes.WinDLL('kernel32')
+        get_limits = kernel32.GetCurrentThreadStackLimits
+        get_limits.argtypes = [ctypes.POINTER(ctypes.c_size_t),
+                               ctypes.POINTER(ctypes.c_size_t)]
+        low, high = ctypes.c_size_t(), ctypes.c_size_t()
+        get_limits(ctypes.byref(low), ctypes.byref(high))
+        return high.value - low.value
+    except (AttributeError, OSError):
+        return None
 
 
 class PlatformTests(unittest.TestCase):
@@ -212,6 +234,100 @@ class PlatformTests(unittest.TestCase):
         self.assertEqual(p2.call('render', 'ghijkl'), self.SVG % 'beta')
         # and the first is untouched by the second having run
         self.assertEqual(p1.call('render', 'abcdef'), self.SVG % 'alpha')
+
+    def test_the_engine_has_a_thread_and_a_stack_of_its_own(self):
+        """Why the platform says a stack size at all, and to whom.
+
+        QuickJS does not look up how much stack it has: its overflow check is
+        ``sp - alloca_size < stack_top - stack_size`` against the *current C
+        stack pointer* (``js_check_stack_overflow``), and both numbers come from
+        the host -- ``JS_UpdateStackTop`` and ``JS_SetMaxStackSize``.  Not
+        calling them is not neutral either: the default is 1 MiB, which is less
+        than MathJax needs, and 0 means *no limit*, i.e. a crash instead of an
+        error.
+
+        So the number has to be said, and the only question is which stack to
+        say it about.  A fraction of whichever thread called makes the same
+        formula work from one of Veusz's paint threads and fail from another --
+        measured, 2.88 MiB reserved left 1.15 MiB of budget and 16 nested
+        fractions.  The platform therefore owns the thread: 40 MiB reserved,
+        16 MiB of budget, and it is the same whoever asks.
+        """
+        thread = platform_module.engine_thread().start()
+        self.assertTrue(thread.thread.is_alive())
+        self.assertEqual(thread.thread.name,
+                         platform_module._ENGINE_THREAD_NAME)
+        budget = thread.call(platform_module.stack_budget_for_this_thread)
+        self.assertGreaterEqual(
+            budget, 4 * 1024 * 1024,
+            'the engine thread has only %d KiB of budget' % (budget // 1024))
+        # ...and the budget has to stay inside the stack it is a fraction of.
+        # The engine's check is the only thing between a deep formula and the
+        # guard page, so a thread sized for a smaller budget would turn a
+        # catchable error into the loss of the process.
+        reserved = thread.call(reserved_stack_of_this_thread)
+        if reserved:
+            self.assertLess(
+                budget, reserved,
+                'a %.2f MiB budget of a %.2f MiB thread reaches the guard page'
+                % (budget / 1048576.0, reserved / 1048576.0))
+
+        # and a thread with a small stack of its own gets the same answer
+        answers = queue.Queue()
+
+        def ask():
+            answers.put(thread.call(platform_module.stack_budget_for_this_thread))
+
+        previous = threading.stack_size()
+        try:
+            threading.stack_size(256 * 1024)
+            worker = threading.Thread(target=ask)
+            worker.start()
+            worker.join()
+        finally:
+            threading.stack_size(previous)
+        self.assertEqual(answers.get(), budget,
+                         'the budget depended on the calling thread again')
+
+    def test_a_deep_formula_does_not_depend_on_the_calling_thread(self):
+        """The same depth from any thread: 64 nested fractions, not 16.
+
+        The bundle is loaded here as a file, because what is being tested is
+        the engine's stack budget and not a feature: a formula deep enough to
+        need megabytes of JS stack has to lay out the same way whichever of
+        Veusz's threads asks for it.
+        """
+        bundle = PROJECT / 'features' / 'mathjax' / 'mathjax.js'
+        self.assertTrue(bundle.is_file(), 'the MathJax bundle is missing')
+        runtime = platform_module.Runtime(bundle, engine=self.engine)
+        depth = 64
+        deep = (r'\frac{1}{' * depth) + 'x' + ('}' * depth)
+        try:
+            from_main = runtime.call('renderInline', deep)
+        finally:
+            runtime.close()
+        self.assertIn('<svg', from_main)
+
+        runtime = platform_module.Runtime(bundle, engine=self.engine)
+        answers = queue.Queue()
+
+        def ask():
+            try:
+                answers.put(runtime.call('renderInline', deep))
+            except Exception as exc:                           # noqa: BLE001
+                answers.put('failed: %s' % exc)
+
+        previous = threading.stack_size()
+        try:
+            threading.stack_size(256 * 1024)
+            worker = threading.Thread(target=ask)
+            worker.start()
+            worker.join()
+        finally:
+            threading.stack_size(previous)
+            runtime.close()
+        self.assertEqual(answers.get(), from_main,
+                         'the drawing depended on the calling thread')
 
     def test_the_report_says_what_is_up(self):
         report = self.platform.report()
@@ -793,6 +909,20 @@ veusz.switch('bold', {label: 'Bold', default: false, row: 'one',
 """
 
 
+#: what the delegating demo asks Veusz to draw
+DELEGATED = '<math><mfrac><mi>a</mi><mi>b</mi></mfrac></math>'
+
+DELEGATE_DEMO = """
+veusz.feature({name: 'delegatedemo', title: 'Delegate demo', target: 'text'});
+veusz.switch('on', {label: 'Delegate', default: false});
+/* draws nothing at all: says what should be drawn and by whom */
+veusz.renderText(function (req) {
+    if (!req.on('on')) { return null; }
+    return veusz.delegate(%s);
+});
+""" % json.dumps(DELEGATED)
+
+
 class JsFeatureTests(unittest.TestCase):
     """A feature written only in JavaScript: the platform builds all of it.
 
@@ -837,6 +967,11 @@ class JsFeatureTests(unittest.TestCase):
         (cls.dir / 'rowdemo').mkdir(parents=True)
         (cls.dir / 'rowdemo' / 'feature.js').write_text(ROW_DEMO,
                                                         encoding='utf-8')
+
+        # a feature that asks Veusz to draw its text
+        (cls.dir / 'delegatedemo').mkdir(parents=True)
+        (cls.dir / 'delegatedemo' / 'feature.js').write_text(
+            DELEGATE_DEMO, encoding='utf-8')
         os.environ['VEUSZ_JS_ENGINE_FEATURES'] = str(cls.dir)
 
     @classmethod
@@ -1113,6 +1248,34 @@ class JsFeatureTests(unittest.TestCase):
                             and 'could not be read' in note
                             for note in recorded),
                         'nothing was recorded about the file: %r' % (recorded,))
+
+    def test_a_feature_can_ask_veusz_to_draw_its_text(self):
+        """The one reply that draws nothing itself: hand the text back.
+
+        The platform hands it to the renderer Veusz would have used -- not to
+        the wrapper that asks the hooks, or a feature would be asked about its
+        own text for ever.  So a feature that has something to say about the
+        text (a parser, a transformation) does not have to learn to draw, and
+        what the user sees is Veusz's own typesetting: this demo hands over
+        MathML, which Veusz draws with its MathML widget.
+        """
+        from veusz.utils import textrender
+        drawn = []
+        original = textrender._MmlRenderer._initText
+
+        def spy(self, text):
+            original(self, text)
+            drawn.append(text)
+
+        textrender._MmlRenderer._initText = spy
+        self.addCleanup(setattr, textrender._MmlRenderer, '_initText', original)
+
+        off = self.ink('delegate-off', {'delegatedemo_on': False})
+        self.assertEqual(drawn, [], 'Veusz was asked to draw with it off')
+        on = self.ink('delegate-on', {'delegatedemo_on': True})
+        self.assertEqual(drawn, [DELEGATED],
+                         'the delegated text did not reach Veusz')
+        self.assertNotEqual(off, on, 'the delegation drew nothing')
 
     def ink(self, name, settings):
         """Draw a label and count the pixels, as a cheap picture comparison."""

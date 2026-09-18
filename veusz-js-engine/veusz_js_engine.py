@@ -70,6 +70,7 @@ import ctypes
 import html
 import json
 import os
+import queue
 import re
 import sys
 import threading
@@ -78,9 +79,16 @@ from pathlib import Path
 
 __version__ = '0.3.0'
 
-# A QuickJS runtime is not safe to call from two threads at once, and Veusz
-# paints from more than one.  Every call into the engine takes this lock.
+# A QuickJS runtime is not safe to call from two threads at once.  Every call
+# runs on the platform's engine thread (:class:`_EngineThread`), so this lock is
+# taken **there and only there**, inside :meth:`_QuickJS._run_here`.  Callers on
+# other threads take ``_RUNTIME_LOCK`` instead: a lock held across the hop
+# would deadlock against the engine thread taking this one.
 _LOCK = threading.RLock()
+
+#: Guards a ``Runtime``'s own lifecycle (starting and closing), on whatever
+#: thread asked -- never held while the engine works.
+_RUNTIME_LOCK = threading.RLock()
 
 # where a consumer looks for the platform once it is installed
 PUBLISH_ATTR = 'js_engine'
@@ -249,28 +257,55 @@ _JS_POLYFILL = (
     b'if (!Object.hasOwn) { Object.hasOwn = function (o, p) {'
     b' return Object.prototype.hasOwnProperty.call(o, p); }; }\n')
 
-#: QuickJS accounts its JS stack in native bytes, and checks
-#: ``sp < stack_top - stack_size`` before it consumes any.  So the budget has
-#: to sit **below** what the calling thread really has, or the engine will walk
-#: off the real stack instead of raising a catchable error.
+#: QuickJS has no idea how much stack it has, and does not look.  Its overflow
+#: check is ``sp - alloca_size < rt->stack_top - rt->stack_size`` against the
+#: *current C stack pointer* (``js_check_stack_overflow`` in quickjs.c): the
+#: host says where the stack top is (``JS_UpdateStackTop``) and how much of it
+#: the engine may use (``JS_SetMaxStackSize``), and that is the whole contract.
+#: There is no OS query anywhere in the engine -- no
+#: ``GetCurrentThreadStackLimits``, no ``pthread_attr_getstack`` -- so the
+#: number is the host's to know or to invent.
 #:
-#: The bridge could measure the calling thread's *remaining* stack; Python
-#: cannot take the address of the current C stack pointer, so this takes a
-#: fraction of the thread's *reserved* stack instead.  Measured here: the
-#: threads Veusz paints on reserve 2.88 MiB, MathJax needs between 512 and 768
-#: KiB for an ordinary formula, and two fifths of 2.88 MiB is 1.15 MiB -- room
-#: to spare.  On a thread with a smaller stack the budget shrinks with it, and
-#: a formula too deep for it fails as a JavaScript error rather than a crash.
+#: Not calling it is not neutral either.  The default is
+#: ``JS_DEFAULT_STACK_SIZE``, 1 MiB (quickjs.h), which is less than MathJax
+#: needs for an ordinary formula; and ``JS_SetMaxStackSize(rt, 0)`` means *no
+#: limit*, i.e. recursion until the process dies rather than a catchable error.
+#:
+#: So the question is not whether to say a number, but which stack to say it
+#: about.  A fraction of the *calling* thread is what the old bridge did, and it
+#: makes the same formula work from one of Veusz's paint threads and fail from
+#: another: measured, a thread with 2.88 MiB reserved leaves a budget of
+#: 1.15 MiB and lays out 16 nested fractions, and no more.  The platform
+#: therefore owns the thread, and the stack, itself -- and the budget is then a
+#: constant rather than a property of whoever asked.
+_ENGINE_THREAD_STACK = 40 * 1024 * 1024
+_ENGINE_THREAD_NAME = 'veusz-js-engine'
+
+#: How much of that stack the engine may account for.  Two fifths of 40 MiB is
+#: 16 MiB, which is the cap; the rest is the margin the C frames themselves
+#: need, because walking off the end of the real stack is a crash and not an
+#: error.  The two numbers move together: a budget is a fraction of the thread
+#: on purpose, so asking for a bigger one means a bigger thread, never a budget
+#: that reaches the guard page.  Measured, for ``\frac{1}{\frac{1}{...}}``:
+#: 1.15 MiB of budget laid out 16 levels, 2 MiB laid out 32, 3.2 MiB laid out
+#: 48, 6 MiB laid out 96, and 16 MiB lays out 288 -- while ``\sqrt`` stops at
+#: 128, ``\left(`` at 320 and superscripts at 64, because a level costs what the
+#: construct costs (build/probe_depth.py).
 _JS_STACK_FRACTION = 0.4
 _JS_STACK_MIN = 256 * 1024
-_JS_STACK_MAX = 2 * 1024 * 1024
+_JS_STACK_MAX = 16 * 1024 * 1024
 _JS_STACK_FALLBACK = 768 * 1024
 
 _JS_MEMORY_LIMIT = 256 * 1024 * 1024
 
 
 def stack_budget_for_this_thread():
-    """How much JS stack the *calling* thread can safely offer the engine."""
+    """How much JS stack this thread can safely offer the engine.
+
+    Called on the platform's engine thread, so this is a constant in practice;
+    it stays a measurement because the engine's check is against the *real*
+    stack, and a smaller thread must never be given a budget it cannot hold.
+    """
     try:
         import ctypes.wintypes
         kernel32 = ctypes.WinDLL('kernel32')
@@ -286,6 +321,94 @@ def stack_budget_for_this_thread():
     except Exception:                                     # noqa: BLE001
         pass
     return _JS_STACK_FALLBACK
+
+
+class _Job(object):
+    """One call to the engine thread, and where its answer goes."""
+
+    def __init__(self, fn):
+        self.fn = fn
+        self.done = threading.Event()
+        self.value = None
+        self.error = None
+
+
+class _EngineThread(object):
+    """The one thread every runtime runs on, with a stack we chose.
+
+    QuickJS's budget is a fraction of the *calling* thread, so whoever calls
+    decides what the engine may do -- which is exactly the wrong thing for a
+    library that needs three quarters of a megabyte to lay out a formula.
+    Veusz's paint threads are not ours to size and are not all the same, so the
+    platform makes one thread with a stack it picks and hands every call to it.
+
+    Two things fall out of that: the budget is a constant, and a runtime can no
+    longer be touched from the wrong thread at all -- which the engine, being
+    single-threaded, would not survive.
+    """
+
+    def __init__(self):
+        self._queue = queue.Queue()
+        self._thread = None
+        self._start_lock = threading.Lock()
+
+    @property
+    def thread(self):
+        return self._thread
+
+    def start(self):
+        with self._start_lock:
+            if self._thread is not None and self._thread.is_alive():
+                return self
+            # threading.stack_size() is process-wide and only affects threads
+            # created after it, so it is set for this one and put back
+            previous = threading.stack_size()
+            try:
+                threading.stack_size(_ENGINE_THREAD_STACK)
+                thread = threading.Thread(target=self._work, daemon=True,
+                                          name=_ENGINE_THREAD_NAME)
+                thread.start()
+            finally:
+                threading.stack_size(previous)
+            self._thread = thread
+            return self
+
+    def call(self, fn):
+        """Run *fn* on the engine thread and return what it returns."""
+        self.start()
+        if threading.current_thread() is self._thread:
+            return fn()                     # already there: no hop, no deadlock
+        job = _Job(fn)
+        self._queue.put(job)
+        job.done.wait()
+        if job.error is not None:
+            raise job.error
+        return job.value
+
+    def _work(self):
+        while True:
+            job = self._queue.get()
+            if job is None:
+                return
+            try:
+                job.value = job.fn()
+            except BaseException as exc:                  # noqa: BLE001
+                job.error = exc
+            finally:
+                job.done.set()
+
+
+_ENGINE_THREAD = None
+_ENGINE_THREAD_LOCK = threading.Lock()
+
+
+def engine_thread():
+    """The thread the engine runs on, started when it is first needed."""
+    global _ENGINE_THREAD
+    with _ENGINE_THREAD_LOCK:
+        if _ENGINE_THREAD is None:
+            _ENGINE_THREAD = _EngineThread()
+        return _ENGINE_THREAD
 
 
 class _JsValueUnion(ctypes.Union):
@@ -321,12 +444,11 @@ class _QuickJS(object):
       representation is in use is decided by a macro at *build* time --
       ``JS_NAN_BOXING`` would make it a single ``uint64_t``.  This build is not
       NaN-boxed.
-    * A runtime belongs to the thread that created it: the stack top is
-      captured in ``JS_NewRuntime``.  Veusz paints from a worker thread and
-      from the main thread, whose stacks can be megabytes apart, so a call from
-      the lower one used to die with ``RangeError: Maximum call stack size
-      exceeded`` on an ordinary formula.  Every call therefore re-anchors the
-      engine and re-sizes its stack budget to the thread doing the calling.
+    * The engine's stack check is against the *calling* thread
+      (``sp < stack_top - stack_size``), and it has no way to look up what that
+      thread really has.  So every runtime is created *and* called on the
+      platform's own thread, whose stack the platform chose: see
+      :class:`_EngineThread`.
     """
 
     def __init__(self, engine, path=None):
@@ -336,6 +458,8 @@ class _QuickJS(object):
         #: how many engine values this object is holding; always zero between
         #: calls, and a test says so
         self._outstanding = 0
+        self.rt = None
+        self.ctx = None
         lib = ctypes.CDLL(str(self.engine))
         self.lib = lib
 
@@ -365,6 +489,11 @@ class _QuickJS(object):
         lib.JS_GetException.restype = _JsValue
         lib.JS_GetException.argtypes = [ctypes.c_void_p]
 
+        engine_thread().call(self._create)
+
+    def _create(self):
+        """Make the runtime and its context -- on the engine thread."""
+        lib = self.lib
         self.rt = lib.JS_NewRuntime()
         if not self.rt:
             raise JsEngineError('cannot create a QuickJS runtime')
@@ -377,9 +506,9 @@ class _QuickJS(object):
             self.rt = None
             raise JsEngineError('cannot create a QuickJS context')
         try:
-            self.run(_JS_POLYFILL, '<polyfill>')
+            self._run_here(_JS_POLYFILL, '<polyfill>')
         except Exception:
-            self.close()
+            self._close_here()
             raise
 
     # -- the one primitive -------------------------------------------------
@@ -389,10 +518,14 @@ class _QuickJS(object):
 
         Everything the platform asks of the engine goes through here, so the
         engine handle exists only between these lines and nothing outside has
-        to know that engine values need releasing.
+        to know that engine values need releasing.  The work happens on the
+        engine thread, whatever thread asked for it.
         """
         if isinstance(source, str):
             source = source.encode('utf-8')
+        return engine_thread().call(lambda: self._run_here(source, name))
+
+    def _run_here(self, source, name):
         with _LOCK:
             self._anchor_to_this_thread()
             value = self.lib.JS_Eval(self.ctx, source, len(source),
@@ -478,20 +611,26 @@ class _QuickJS(object):
             return 'unknown JavaScript exception'
 
     def _anchor_to_this_thread(self):
-        """Point the engine at the stack we are actually on.
+        """Say where the stack top is, and that this is the right thread.
 
-        A runtime is created on one thread and called from another, so both
-        halves of the engine's stack check are redone here: the top, which
-        ``JS_NewRuntime`` captured, and the budget, which has to fit the thread
-        calling now.
+        Every call arrives on the platform's engine thread, so the top is the
+        same one every time and the budget is a constant.  The check is kept
+        anyway: it is three lines, and it is where a call from anywhere else --
+        which the engine, being single-threaded, would not survive -- is
+        noticed instead of corrupting something quietly.
         """
+        thread = engine_thread()
+        if threading.current_thread() is not thread.thread:
+            raise JsEngineError(
+                'the engine was called from thread %r, not from its own (%r)'
+                % (threading.current_thread().name, _ENGINE_THREAD_NAME))
         self.lib.JS_UpdateStackTop(self.rt)
         budget = stack_budget_for_this_thread()
         if budget != self._stack_budget:
             self.lib.JS_SetMaxStackSize(self.rt, budget)
             self._stack_budget = budget
 
-    def close(self):
+    def _close_here(self):
         if self.ctx:
             self.lib.JS_RunGC(self.rt)
             self.lib.JS_FreeContext(self.ctx)
@@ -499,6 +638,17 @@ class _QuickJS(object):
         if self.rt:
             self.lib.JS_FreeRuntime(self.rt)
             self.rt = None
+
+    def close(self):
+        """Free the runtime -- on the engine thread, where it lives."""
+        if self.rt is None and self.ctx is None:
+            return
+        thread = _ENGINE_THREAD
+        if thread is None or thread.thread is None \
+                or not thread.thread.is_alive():
+            self._close_here()          # shutting down: nobody else is left
+            return
+        thread.call(self._close_here)
 
 
 
@@ -531,7 +681,7 @@ class Runtime(object):
         return self._js is not None
 
     def start(self):
-        with _LOCK:
+        with _RUNTIME_LOCK:
             self._start_locked()
         return self
 
@@ -560,7 +710,7 @@ class Runtime(object):
         return self
 
     def close(self):
-        with _LOCK:
+        with _RUNTIME_LOCK:
             if self._js is not None:
                 self._js.close()
             self._js = None
@@ -576,7 +726,7 @@ class Runtime(object):
         for display -- return a string (JSON, typically) when the value
         matters.
         """
-        with _LOCK:
+        with _RUNTIME_LOCK:
             if not self.started:
                 self._start_locked()
             return self._js.run(source, name)
@@ -588,7 +738,7 @@ class Runtime(object):
         JavaScript.  JSON inside the string is a convention between the two of
         them, not something the engine knows about; see ``call_json``.
         """
-        with _LOCK:
+        with _RUNTIME_LOCK:
             if not self.started:
                 self._start_locked()
             return self._js.call(fn_name, payload)
@@ -608,7 +758,7 @@ class Runtime(object):
         How a JavaScript file adds an optional part of itself (a bundle, a
         font, a plugin) without the feature having to know what it is.
         """
-        with _LOCK:
+        with _RUNTIME_LOCK:
             if not self.started:
                 self._start_locked()
             self._js.run_file(path)
@@ -903,6 +1053,10 @@ class State(object):
         self.notes = []
         self.hooked = False
         self.platform = None
+        #: Veusz's own ``textrender.Renderer``, from before the platform
+        #: replaced it with the wrapper that asks the hooks.  A feature that
+        #: says "you draw this" is handed it directly.
+        self.native_renderer = None
         # which settings group made which font -- per thread, because Veusz
         # paints from more than one
         self.owner = threading.local()
@@ -1253,6 +1407,10 @@ def make_renderer_wrapper(textrender, qt, state):
     ``loadPlugins`` cannot leave it dispatching to a stale registry.
     """
     original = textrender.Renderer
+    # a feature may answer "you draw this" -- and then it must be *this*
+    # function it is handed: passing the wrapper would ask the hooks again,
+    # about text a feature has already had its say over
+    state.native_renderer = original
 
     def _renderer(painter, font, x, y, text,
                   alignhorz=-1, alignvert=-1, angle=0, usefullheight=False,
@@ -2499,6 +2657,19 @@ def install_js_feature(platform, entry, feature_dir, name):
                 return None
         if reply.get('note'):
             platform.state.note('%s: %s' % (feature.name, reply['note']))
+        delegated = reply.get('delegate')
+        if delegated:
+            # The feature says: Veusz, draw *this* text yourself.  What comes
+            # back is the native renderer, so a MathML document among it is
+            # drawn by Veusz's own MathML widget, in the element's font, with
+            # its own error text if it does not understand it -- the platform
+            # never learns what a `<math>` element is.
+            native = platform.state.native_renderer
+            if native is None:
+                raise JsEngineError('%s asked Veusz to draw its text, but the '
+                                    'platform has not replaced the renderer '
+                                    'yet' % feature.name)
+            return native(painter, font, x, y, delegated, **kwargs)
         return renderer_class(painter, font, x, y, text, reply=reply,
                               **kwargs)
 
