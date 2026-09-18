@@ -14,6 +14,22 @@ what MathJax implements (see *What it renders* and *Limitations*).
 Nothing in Veusz has to change for this: the plugin carries the whole feature
 (settings, renderer, widget wiring) itself.
 
+> **There is a second project now, and this is where it came from.**
+>
+> The JavaScript half of this plugin — the embedded engine, the settings a
+> renderer declares, and the seam that lets a script draw a Veusz object — has
+> been separated into its own project,
+> [`veusz-js-engine`](https://github.com/zhaiyusci/veusz-js-engine). It is a
+> small platform: it owns one QuickJS and the Veusz plumbing, and everything
+> else is a *feature*, written in JavaScript and dropped into `features/`. This
+> plugin's MathJax renderer has been ported to it — item by item, tested against
+> this one — and a KaTeX feature sits beside it.
+>
+> **Nothing here changes because of that.** This repository is still the
+> released plugin: the same files, the same install, the same settings written
+> into your documents. The new project has no release yet, so until it has one,
+> this is the plugin to install.
+
 ## Platforms
 
 Prebuilt binaries: **Windows x64 only**. That is what the author builds and
