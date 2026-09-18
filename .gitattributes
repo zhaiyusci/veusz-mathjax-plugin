@@ -20,15 +20,3 @@
 # (the *.js binary rule above is for the generated bundles in data/ and fonts/;
 # it expands to -diff -merge -text, so all three have to be undone here).
 src/*.js text diff merge
-
-# ...and the platform's own JavaScript, for the same reason.  What it is
-# written in is the point of veusz-js-engine: jsapi.js is the API a feature is
-# written against, and features/*/feature.js is a feature.  They are 11 KiB and
-# a few KiB of reviewable code, and under the rule above neither showed a diff,
-# so a change to a feature was invisible in git log -p.
-#
-# Still binary, deliberately: the generated MathJax bundle (features/mathjax/
-# mathjax.js, 6.3 MB), the twenty font data files beside it, and katex.min.js,
-# which is a third-party build.
-veusz-js-engine/jsapi.js text diff merge
-veusz-js-engine/features/*/feature.js text diff merge
